@@ -1,0 +1,9 @@
+# Copy this file to data/subscription.yaml for local development,
+# or paste your real YAML into the YAML_CONTENT environment variable on Vercel.
+proxies:
+  - name: example
+    type: ss
+    server: example.com
+    port: 8388
+    cipher: aes-128-gcm
+    password: example-password
