@@ -27,10 +27,12 @@ type LinkResponse = {
 
 type ExpiryUnit = "minutes" | "hours" | "days";
 type ExpiryMode = "duration" | "exact";
+type WorkMode = "create" | "extend";
 
 const storageKey = "yaml-link-history";
 
 export default function Home() {
+  const [workMode, setWorkMode] = useState<WorkMode>("create");
   const [password, setPassword] = useState("");
   const [label, setLabel] = useState("");
   const [expiryMode, setExpiryMode] = useState<ExpiryMode>("duration");
@@ -50,6 +52,7 @@ export default function Home() {
   const [status, setStatus] = useState("");
   const [extendError, setExtendError] = useState("");
   const [extendStatus, setExtendStatus] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExtending, setIsExtending] = useState(false);
 
@@ -78,6 +81,7 @@ export default function Home() {
     event.preventDefault();
     setError("");
     setStatus("");
+    setHistoryStatus("");
     setIsSubmitting(true);
 
     const payload =
@@ -101,7 +105,7 @@ export default function Home() {
       });
 
       setLinks((current) => [nextLink, ...current].slice(0, 20));
-      setStatus("链接已生成");
+      setStatus("链接已生成，已加入右侧列表");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "生成链接失败");
     } finally {
@@ -113,6 +117,7 @@ export default function Home() {
     event.preventDefault();
     setExtendError("");
     setExtendStatus("");
+    setHistoryStatus("");
     setIsExtending(true);
 
     const payload =
@@ -148,182 +153,258 @@ export default function Home() {
 
   async function copyLink(url: string) {
     await navigator.clipboard.writeText(url);
-    setStatus("链接已复制");
+    setHistoryStatus("链接已复制");
   }
 
   return (
     <main className="page-shell">
-      <section className="workspace">
-        <div className="intro-panel">
-          <div className="brand-row">
+      <header className="app-header">
+        <div className="app-header-inner">
+          <div className="brand-lockup">
             <span className="brand-mark" aria-hidden="true">
               Y
             </span>
-            <span className="brand-name">YAML Link Manager</span>
-          </div>
-          <h1>管理限时 YAML 访问链接</h1>
-          <p>
-            生成新链接，或粘贴已有链接延长有效期。每次延长都会生成一个新的替代链接，旧链接不会被原地修改。
-          </p>
-        </div>
-
-        <div className="form-column">
-          <form className="control-panel" onSubmit={createLink}>
-            <div className="form-title">
-              <h2>生成新链接</h2>
-              <p>为 YAML 内容创建一个独立的限时访问地址。</p>
+            <div>
+              <strong>YAML Link Manager</strong>
+              <span>限时 YAML 访问控制</span>
             </div>
+          </div>
+          <div className="header-status" aria-label="服务状态">
+            <span aria-hidden="true" />
+            服务端校验已启用
+          </div>
+        </div>
+      </header>
 
-            <div className="field-grid">
-              <label className="field">
-                <span>管理员密码</span>
-                <input
-                  required
+      <section className="workspace" aria-label="YAML 链接工作台">
+        <section className="tool-panel" aria-labelledby="tool-title">
+          <div className="tool-tabs" role="tablist" aria-label="链接操作">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workMode === "create"}
+              className={workMode === "create" ? "active" : ""}
+              onClick={() => setWorkMode("create")}
+            >
+              生成新链接
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workMode === "extend"}
+              className={workMode === "extend" ? "active" : ""}
+              onClick={() => setWorkMode("extend")}
+            >
+              延长已有链接
+            </button>
+          </div>
+
+          {workMode === "create" ? (
+            <form className="tool-form" onSubmit={createLink}>
+              <div className="form-title">
+                <h1 id="tool-title">生成新链接</h1>
+                <p>为当前 YAML 来源创建一个独立的限时访问地址。</p>
+              </div>
+
+              <div className="field-grid">
+                <TextField
+                  label="管理员密码"
                   type="password"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
+                  onChange={setPassword}
                   placeholder="ADMIN_PASSWORD"
+                  autoComplete="current-password"
+                  required
                 />
-              </label>
-
-              <label className="field">
-                <span>链接备注</span>
-                <input
-                  type="text"
+                <TextField
+                  label="链接备注"
                   value={label}
-                  onChange={(event) => setLabel(event.target.value)}
+                  onChange={setLabel}
                   placeholder="例如：客户 A / 7 天"
                   maxLength={80}
                 />
-              </label>
-            </div>
+              </div>
 
-            <ExpiryControls
-              mode={expiryMode}
-              setMode={setExpiryMode}
-              durationValue={durationValue}
-              setDurationValue={setDurationValue}
-              durationUnit={durationUnit}
-              setDurationUnit={setDurationUnit}
-              exactTime={exactTime}
-              setExactTime={setExactTime}
-              durationLabel="有效期"
-            />
+              <ExpiryControls
+                mode={expiryMode}
+                setMode={setExpiryMode}
+                durationValue={durationValue}
+                setDurationValue={setDurationValue}
+                durationUnit={durationUnit}
+                setDurationUnit={setDurationUnit}
+                exactTime={exactTime}
+                setExactTime={setExactTime}
+                durationLabel="有效期"
+              />
 
-            <button className="primary-button" type="submit" disabled={isSubmitting}>
-              {isSubmitting ? "生成中..." : "生成链接"}
-            </button>
+              <button className="primary-button" type="submit" disabled={isSubmitting}>
+                {isSubmitting ? "生成中..." : "生成链接"}
+              </button>
 
-            {error ? <p className="message error">{error}</p> : null}
-            {status ? <p className="message success">{status}</p> : null}
-          </form>
+              {error ? <p className="message error">{error}</p> : null}
+              {status ? <p className="message success">{status}</p> : null}
+            </form>
+          ) : (
+            <form className="tool-form" onSubmit={extendExistingLink}>
+              <div className="form-title">
+                <h1 id="tool-title">延长已有链接</h1>
+                <p>未过期链接从原过期时间继续增加；已过期链接从当前时间重新延长。</p>
+              </div>
 
-          <form className="control-panel" onSubmit={extendExistingLink}>
-            <div className="form-title">
-              <h2>延长已有链接</h2>
-              <p>粘贴完整链接或 token。未过期链接从原过期时间继续增加，已过期链接从现在开始延长。</p>
-            </div>
-
-            <div className="field-grid">
-              <label className="field">
-                <span>管理员密码</span>
-                <input
-                  required
+              <div className="field-grid">
+                <TextField
+                  label="管理员密码"
                   type="password"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
+                  onChange={setPassword}
                   placeholder="ADMIN_PASSWORD"
+                  autoComplete="current-password"
+                  required
                 />
-              </label>
-
-              <label className="field">
-                <span>新备注</span>
-                <input
-                  type="text"
+                <TextField
+                  label="新备注"
                   value={extendLabel}
-                  onChange={(event) => setExtendLabel(event.target.value)}
+                  onChange={setExtendLabel}
                   placeholder="留空则沿用旧备注"
                   maxLength={80}
                 />
-              </label>
-            </div>
+              </div>
 
-            <label className="field">
-              <span>已有链接或 token</span>
-              <input
-                required
-                type="text"
+              <TextField
+                label="已有链接或 token"
                 value={extendLinkInput}
-                onChange={(event) => setExtendLinkInput(event.target.value)}
+                onChange={setExtendLinkInput}
                 placeholder="https://.../api/subscription/eyJ2Ijox..."
+                required
               />
-            </label>
 
-            <ExpiryControls
-              mode={extendMode}
-              setMode={setExtendMode}
-              durationValue={extendDurationValue}
-              setDurationValue={setExtendDurationValue}
-              durationUnit={extendDurationUnit}
-              setDurationUnit={setExtendDurationUnit}
-              exactTime={extendExactTime}
-              setExactTime={setExtendExactTime}
-              durationLabel="增加时长"
-            />
+              <ExpiryControls
+                mode={extendMode}
+                setMode={setExtendMode}
+                durationValue={extendDurationValue}
+                setDurationValue={setExtendDurationValue}
+                durationUnit={extendDurationUnit}
+                setDurationUnit={setExtendDurationUnit}
+                exactTime={extendExactTime}
+                setExactTime={setExtendExactTime}
+                durationLabel="增加时长"
+              />
 
-            <button className="primary-button" type="submit" disabled={isExtending}>
-              {isExtending ? "延长中..." : "延长并生成新链接"}
-            </button>
+              <button className="primary-button" type="submit" disabled={isExtending}>
+                {isExtending ? "延长中..." : "延长并生成新链接"}
+              </button>
 
-            {extendError ? <p className="message error">{extendError}</p> : null}
-            {extendStatus ? <p className="message success">{extendStatus}</p> : null}
-          </form>
-        </div>
+              {extendError ? <p className="message error">{extendError}</p> : null}
+              {extendStatus ? <p className="message success">{extendStatus}</p> : null}
+            </form>
+          )}
+        </section>
 
-        <section className="link-panel" aria-labelledby="history-title">
+        <section className="history-panel" aria-labelledby="history-title">
           <div className="panel-heading">
             <div>
               <h2 id="history-title">最近生成</h2>
-              <p>历史只保存在当前浏览器，本项目不依赖数据库。</p>
+              <p>仅保存在当前浏览器，最多显示 20 条。</p>
             </div>
-            {links.length > 0 ? (
-              <button className="secondary-button" type="button" onClick={() => setLinks([])}>
-                清空
-              </button>
-            ) : null}
+            <div className="history-actions">
+              {historyStatus ? <span>{historyStatus}</span> : null}
+              {links.length > 0 ? (
+                <button className="secondary-button" type="button" onClick={() => setLinks([])}>
+                  清空
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {links.length === 0 ? (
-            <div className="empty-state">还没有生成链接</div>
+            <div className="empty-state">
+              <strong>还没有链接</strong>
+              <span>生成或延长后会显示在这里。</span>
+            </div>
           ) : (
-            <div className="link-list">
-              {links.map((link) => (
-                <article className="link-item" key={link.token}>
-                  <div className="link-meta">
-                    <div className="link-title-row">
-                      <span>{link.label || "未命名链接"}</span>
-                      {link.source === "extended" ? <b>已延长</b> : null}
+            <div className="link-table" role="table" aria-label="最近生成的链接">
+              <div className="link-table-head" role="row">
+                <span>备注</span>
+                <span>过期时间</span>
+                <span>链接</span>
+                <span>操作</span>
+              </div>
+              <div className="link-table-body">
+                {links.map((link) => (
+                  <article className="link-row" role="row" key={link.token}>
+                    <div className="link-meta" role="cell">
+                      <div className="link-title-row">
+                        <strong>{link.label || "未命名链接"}</strong>
+                        {link.source === "extended" ? <b>已延长</b> : null}
+                      </div>
+                      {link.previousExpiresAt ? (
+                        <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small>
+                      ) : null}
                     </div>
-                    <time dateTime={link.expiresAt}>
-                      过期：{new Date(link.expiresAt).toLocaleString()}
+                    <time role="cell" dateTime={link.expiresAt}>
+                      {new Date(link.expiresAt).toLocaleString()}
                     </time>
-                    {link.previousExpiresAt ? (
-                      <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small>
-                    ) : null}
-                  </div>
-                  <code>{link.url}</code>
-                  <button className="secondary-button" type="button" onClick={() => copyLink(link.url)}>
-                    复制
-                  </button>
-                </article>
-              ))}
+                    <code role="cell">{link.url}</code>
+                    <div className="row-actions" role="cell">
+                      <button className="secondary-button compact" type="button" onClick={() => copyLink(link.url)}>
+                        复制
+                      </button>
+                      <a className="icon-link" href={link.url} target="_blank" rel="noreferrer" aria-label="打开链接">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M14 5h5v5" />
+                          <path d="m10 14 9-9" />
+                          <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
+                        </svg>
+                      </a>
+                    </div>
+                  </article>
+                ))}
+              </div>
             </div>
           )}
         </section>
       </section>
+
+      <footer className="app-footer">
+        <span>请妥善保管管理员密码和 LINK_SECRET</span>
+        <span>v0.1.0</span>
+      </footer>
     </main>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+  autoComplete,
+  maxLength,
+  required
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+  autoComplete?: string;
+  maxLength?: number;
+  required?: boolean;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input
+        required={required}
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        autoComplete={autoComplete}
+        placeholder={placeholder}
+        maxLength={maxLength}
+      />
+    </label>
   );
 }
 
@@ -349,7 +430,7 @@ function ExpiryControls({
   durationLabel: string;
 }) {
   return (
-    <>
+    <div className="expiry-block">
       <div className="segmented" aria-label="过期时间模式">
         <button
           type="button"
@@ -395,7 +476,7 @@ function ExpiryControls({
           <input required type="datetime-local" value={exactTime} onChange={(event) => setExactTime(event.target.value)} />
         </label>
       )}
-    </>
+    </div>
   );
 }
 
