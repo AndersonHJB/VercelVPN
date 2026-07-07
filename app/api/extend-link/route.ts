@@ -9,6 +9,7 @@ import {
   parseExtendedExpiry,
   sanitizeLabel
 } from "@/lib/link-admin";
+import { isTokenRevoked } from "@/lib/revoked-links";
 import { createSignedToken, requireLinkSecret, type LinkPayload, verifySignedToken } from "@/lib/token";
 
 type ExtendLinkBody = {
@@ -43,6 +44,10 @@ export async function POST(request: Request) {
 
     if (!verification.ok) {
       return NextResponse.json({ error: verification.message }, { status: verification.status });
+    }
+
+    if (await isTokenRevoked(existingToken, nowSeconds)) {
+      return NextResponse.json({ error: "This link has been invalidated." }, { status: 410 });
     }
 
     const previousExpiresAtSeconds = verification.payload.exp;

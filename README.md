@@ -7,8 +7,9 @@
 - 为同一个 YAML 文件生成多个不同有效期的链接。
 - 对某个已有链接增加有效期。
 - 已过期但签名有效的链接，也可以由管理员延长并生成新的替代链接。
+- 对某个已有链接单独设置失效，访问时返回 `410 Gone`。
 - 链接过期后返回 `410 Gone`，不再暴露 YAML 内容。
-- 无数据库：链接 token 使用 `LINK_SECRET` 做 HMAC 签名。
+- 链接 token 使用 `LINK_SECRET` 做 HMAC 签名；单链接失效只存 token 哈希。
 - 管理页需要 `ADMIN_PASSWORD` 才能生成链接。
 - YAML 来源支持环境变量内容、本地文件、远程 YAML 链接。
 - YAML 不放在 `public/`，避免绕过服务端校验。
@@ -20,7 +21,8 @@
 3. payload 会用 `LINK_SECRET` 签名，形成不可篡改 token。
 4. 用户访问 `/api/subscription/[token]`。
 5. 服务端验证签名和 `exp`。
-6. 验证通过返回 `text/yaml`，过期返回 `410 Gone`。
+6. 服务端检查该 token 的哈希是否在失效清单中。
+7. 验证通过返回 `text/yaml`，过期或已失效返回 `410 Gone`。
 
 延长已有链接时，管理页会提交旧链接到 `/api/extend-link`。服务端会允许解析“已过期但签名仍有效”的 token，然后生成一个新的替代链接：
 
@@ -28,7 +30,9 @@
 - 旧链接已过期：从当前时间开始增加时长。
 - 指定新的过期时间时，新时间必须晚于旧过期时间或当前时间。
 
-这个方案是无状态的，所以不能原地修改同一个 URL，也不能单独提前撤销某一个链接。需要让所有已生成链接立即失效时，修改 Vercel 环境变量里的 `LINK_SECRET` 并重新部署。
+失效已有链接时，管理页会提交旧链接到 `/api/invalidate-link`。服务端验证管理员密码和 token 签名后，把 token 的 SHA-256 哈希写入失效清单。原 URL 不会改变；之后访问同一个 URL 会返回 `This link has been invalidated.` 和 HTTP `410`。
+
+本地开发默认使用 `data/revoked-links.json` 保存失效清单。Vercel 等无状态部署需要配置 KV/Upstash 这类持久化存储，否则单链接失效无法跨实例可靠生效。
 
 ## 本地运行教程
 
@@ -65,6 +69,7 @@ YAML_CONTENT=
 YAML_SOURCE_URL=
 YAML_FILE_PATH=data/subscription.yaml
 MAX_LINK_TTL_DAYS=365
+REVOKED_LINKS_FILE_PATH=data/revoked-links.json
 ```
 
 `LINK_SECRET` 至少 32 个字符。不要把 `.env.local` 提交到 GitHub。
@@ -99,7 +104,7 @@ cp data/subscription.example.yaml data/subscription.yaml
 
 然后把 `data/subscription.yaml` 替换成你的真实 YAML 内容。
 
-注意：如果同时设置了 `YAML_CONTENT` 和 `YAML_SOURCE_URL`，会优先使用 `YAML_CONTENT`。`data/subscription.yaml` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 放到 `public/` 目录。
+注意：如果同时设置了 `YAML_CONTENT` 和 `YAML_SOURCE_URL`，会优先使用 `YAML_CONTENT`。`data/subscription.yaml` 和 `data/revoked-links.json` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 放到 `public/` 目录。
 
 ### 5. 启动本地服务
 
@@ -167,6 +172,7 @@ GitHub CLI 官方文档：<https://cli.github.com/manual/gh_repo_create>
 - `.env`
 - `.env.local`
 - `data/subscription.yaml`
+- `data/revoked-links.json`
 - 任何真实密码、token、订阅链接或密钥
 
 ### 2. 打开 Vercel
@@ -202,6 +208,8 @@ YAML_CONTENT=你的完整YAML内容
 YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
 YAML_FILE_PATH=data/subscription.yaml
 MAX_LINK_TTL_DAYS=365
+KV_REST_API_URL=你的 KV 或 Upstash REST URL
+KV_REST_API_TOKEN=你的 KV 或 Upstash REST token
 ```
 
 三种 YAML 来源选一种即可：
@@ -209,6 +217,8 @@ MAX_LINK_TTL_DAYS=365
 - 小型 YAML：推荐 `YAML_CONTENT`。
 - 已经有订阅源链接：推荐 `YAML_SOURCE_URL`。
 - 本地开发：可以用 `YAML_FILE_PATH`。
+
+如果你需要在 Vercel 上使用“单链接失效”，请配置 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`。如果你使用自建 Upstash 兼容 REST 存储，也可以改用 `LINK_REVOCATION_UPSTASH_REST_URL` 和 `LINK_REVOCATION_UPSTASH_REST_TOKEN`。没有这些变量时，Vercel 上的失效接口会提示撤销存储未配置。
 
 如果在 Vercel 上使用 `YAML_SOURCE_URL`，每次访问限时链接时服务端都会去拉取上游 YAML 链接。远程请求有 10 秒超时，且不会缓存。
 
@@ -271,6 +281,7 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 
 - 未过期：返回 YAML 内容。
 - 已过期：返回 `This link has expired.` 和 HTTP `410`。
+- 已失效：返回 `This link has been invalidated.` 和 HTTP `410`。
 - token 被改动：返回 `Invalid link.` 和 HTTP `403` 或 `400`。
 
 ### 给不同用户设置不同有效期
@@ -300,7 +311,19 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 旧链接已经过期：例如昨天过期，增加 7 天后，会变成从现在开始 7 天。
 - 旧链接 token 被篡改：不能延长，会返回 `Invalid link.`。
 
-注意：延长后得到的是新 URL，旧 URL 不会变。无数据库版本无法让旧 URL 原地恢复可用。
+注意：延长后得到的是新 URL，旧 URL 不会变。如果旧 URL 不应该继续可用，可以再执行失效操作。
+
+### 失效已有链接
+
+方式 A：在 `最近生成` 列表里找到对应链接，点击 `失效`。
+
+方式 B：打开 `失效已有链接` 区域：
+
+1. 输入 `ADMIN_PASSWORD`。
+2. 粘贴完整旧链接，或只粘贴 token。
+3. 点击 `确认失效`。
+
+失效后，同一个 URL 会返回 `410 Gone`。延长接口也会拒绝继续延长已失效的链接。
 
 ### 立即让所有链接失效
 
@@ -317,9 +340,10 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 不要提交 `.env.local`。
 - 不要把 `ADMIN_PASSWORD` 和 `LINK_SECRET` 发给使用者。
 - 如果 `YAML_SOURCE_URL` 本身是敏感订阅源，不要把它写进 README、前端代码或公开仓库，只放在 Vercel 环境变量里。
+- 单链接失效只保存 token 的 SHA-256 哈希，不保存原始订阅 URL 或 token。
 - `LINK_SECRET` 改了以后，所有旧链接都会失效。
-- 无数据库版本不能原地修改旧 URL，也不能单独撤销某一个链接。
-- 如果要支持单个链接撤销、访问次数限制、用户列表、访问日志，需要增加数据库。
+- 在 Vercel 上使用单链接失效时，需要 KV/Upstash 这类持久化存储。
+- 如果要支持访问次数限制、用户列表、访问日志，需要增加数据库。
 
 ## 常用命令
 
@@ -338,11 +362,13 @@ app/
   api/
     links/route.ts                 # 生成签名链接
     extend-link/route.ts           # 延长已有链接并生成替代链接
+    invalidate-link/route.ts       # 将某个链接写入失效清单
     subscription/[token]/route.ts  # 校验 token 并返回 YAML
   page.tsx                         # 管理页面
 lib/
   auth.ts                          # 管理员密码校验
   link-admin.ts                    # 链接生成和延长的通用规则
+  revoked-links.ts                 # token 哈希失效清单存储
   token.ts                         # HMAC token 签名和验证
   yaml.ts                          # 读取 YAML_CONTENT、YAML_SOURCE_URL 或 YAML_FILE_PATH
 data/

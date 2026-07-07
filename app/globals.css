@@ -155,7 +155,7 @@ button:disabled {
 
 .tool-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border-bottom: 1px solid var(--border);
   background: var(--surface-muted);
 }
@@ -314,6 +314,15 @@ h2 {
   background: var(--accent-strong);
 }
 
+.primary-button.danger-primary {
+  background: var(--danger);
+  box-shadow: 0 8px 18px rgba(180, 35, 24, 0.14);
+}
+
+.primary-button.danger-primary:hover:not(:disabled) {
+  background: #912018;
+}
+
 .secondary-button {
   border: 1px solid var(--border);
   background: #fff;
@@ -330,6 +339,15 @@ h2 {
   height: 32px;
   padding: 0 11px;
   font-size: 0.82rem;
+}
+
+.secondary-button.danger-button {
+  color: var(--danger);
+}
+
+.secondary-button.danger-button:hover:not(:disabled) {
+  border-color: #f5c4bd;
+  background: var(--danger-soft);
 }
 
 .message {
@@ -375,6 +393,10 @@ h2 {
   font-size: 0.82rem;
   font-weight: 800;
   white-space: nowrap;
+}
+
+.history-actions span.error {
+  color: var(--danger);
 }
 
 .empty-state {
@@ -431,6 +453,10 @@ h2 {
   border-bottom: 0;
 }
 
+.link-row.invalidated {
+  background: #fffafa;
+}
+
 .link-meta {
   min-width: 0;
   display: grid;
@@ -462,6 +488,11 @@ h2 {
   padding: 2px 7px;
   font-size: 0.7rem;
   line-height: 1.35;
+}
+
+.link-title-row b.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .link-meta small,

@@ -9,6 +9,7 @@ type GeneratedLink = {
   expiresInSeconds: number;
   label?: string;
   createdAt: string;
+  invalidatedAt?: string;
   previousExpiresAt?: string;
   wasExpired?: boolean;
   source?: "created" | "extended";
@@ -25,9 +26,21 @@ type LinkResponse = {
   error?: string;
 };
 
+type InvalidateResponse = {
+  token?: string;
+  tokenHash?: string;
+  label?: string;
+  expiresAt?: string;
+  invalidatedAt?: string;
+  alreadyExpired?: boolean;
+  alreadyInvalidated?: boolean;
+  error?: string;
+};
+
 type ExpiryUnit = "minutes" | "hours" | "days";
 type ExpiryMode = "duration" | "exact";
-type WorkMode = "create" | "extend";
+type WorkMode = "create" | "extend" | "invalidate";
+type MessageKind = "success" | "error";
 
 const storageKey = "yaml-link-history";
 
@@ -46,15 +59,21 @@ export default function Home() {
   const [extendDurationValue, setExtendDurationValue] = useState("7");
   const [extendDurationUnit, setExtendDurationUnit] = useState<ExpiryUnit>("days");
   const [extendExactTime, setExtendExactTime] = useState("");
+  const [invalidateLinkInput, setInvalidateLinkInput] = useState("");
 
   const [links, setLinks] = useState<GeneratedLink[]>([]);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [extendError, setExtendError] = useState("");
   const [extendStatus, setExtendStatus] = useState("");
+  const [invalidateError, setInvalidateError] = useState("");
+  const [invalidateStatus, setInvalidateStatus] = useState("");
   const [historyStatus, setHistoryStatus] = useState("");
+  const [historyStatusKind, setHistoryStatusKind] = useState<MessageKind>("success");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExtending, setIsExtending] = useState(false);
+  const [isInvalidating, setIsInvalidating] = useState(false);
+  const [invalidatingToken, setInvalidatingToken] = useState("");
 
   useEffect(() => {
     const saved = window.localStorage.getItem(storageKey);
@@ -82,6 +101,7 @@ export default function Home() {
     setError("");
     setStatus("");
     setHistoryStatus("");
+    setHistoryStatusKind("success");
     setIsSubmitting(true);
 
     const payload =
@@ -118,6 +138,7 @@ export default function Home() {
     setExtendError("");
     setExtendStatus("");
     setHistoryStatus("");
+    setHistoryStatusKind("success");
     setIsExtending(true);
 
     const payload =
@@ -151,9 +172,69 @@ export default function Home() {
     }
   }
 
+  async function invalidateExistingLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setInvalidateError("");
+    setInvalidateStatus("");
+    setHistoryStatus("");
+    setHistoryStatusKind("success");
+    setIsInvalidating(true);
+
+    try {
+      const data = await postInvalidateLink(
+        "/api/invalidate-link",
+        {
+          password,
+          link: invalidateLinkInput
+        },
+        "失效链接失败"
+      );
+
+      markLinkInvalidated(data.token as string, data.invalidatedAt as string);
+      setInvalidateStatus(getInvalidateStatus(data));
+    } catch (caught) {
+      setInvalidateError(caught instanceof Error ? caught.message : "失效链接失败");
+    } finally {
+      setIsInvalidating(false);
+    }
+  }
+
+  async function invalidateGeneratedLink(link: GeneratedLink) {
+    setHistoryStatus("");
+    setHistoryStatusKind("success");
+    setInvalidatingToken(link.token);
+
+    try {
+      const data = await postInvalidateLink(
+        "/api/invalidate-link",
+        {
+          password,
+          token: link.token
+        },
+        "失效链接失败"
+      );
+
+      markLinkInvalidated(data.token as string, data.invalidatedAt as string);
+      setHistoryStatusKind("success");
+      setHistoryStatus(data.alreadyInvalidated ? "链接此前已失效" : "链接已失效");
+    } catch (caught) {
+      setHistoryStatusKind("error");
+      setHistoryStatus(caught instanceof Error ? caught.message : "失效链接失败");
+    } finally {
+      setInvalidatingToken("");
+    }
+  }
+
   async function copyLink(url: string) {
     await navigator.clipboard.writeText(url);
+    setHistoryStatusKind("success");
     setHistoryStatus("链接已复制");
+  }
+
+  function markLinkInvalidated(token: string, invalidatedAt: string) {
+    setLinks((current) =>
+      current.map((link) => (link.token === token ? { ...link, invalidatedAt } : link))
+    );
   }
 
   return (
@@ -196,6 +277,15 @@ export default function Home() {
               onClick={() => setWorkMode("extend")}
             >
               延长已有链接
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workMode === "invalidate"}
+              className={workMode === "invalidate" ? "active" : ""}
+              onClick={() => setWorkMode("invalidate")}
+            >
+              失效已有链接
             </button>
           </div>
 
@@ -244,7 +334,7 @@ export default function Home() {
               {error ? <p className="message error">{error}</p> : null}
               {status ? <p className="message success">{status}</p> : null}
             </form>
-          ) : (
+          ) : workMode === "extend" ? (
             <form className="tool-form" onSubmit={extendExistingLink}>
               <div className="form-title">
                 <h1 id="tool-title">延长已有链接</h1>
@@ -297,6 +387,38 @@ export default function Home() {
               {extendError ? <p className="message error">{extendError}</p> : null}
               {extendStatus ? <p className="message success">{extendStatus}</p> : null}
             </form>
+          ) : (
+            <form className="tool-form" onSubmit={invalidateExistingLink}>
+              <div className="form-title">
+                <h1 id="tool-title">失效已有链接</h1>
+                <p>失效后，该链接再次访问会返回 410，不再暴露 YAML 内容。</p>
+              </div>
+
+              <TextField
+                label="管理员密码"
+                type="password"
+                value={password}
+                onChange={setPassword}
+                placeholder="ADMIN_PASSWORD"
+                autoComplete="current-password"
+                required
+              />
+
+              <TextField
+                label="已有链接或 token"
+                value={invalidateLinkInput}
+                onChange={setInvalidateLinkInput}
+                placeholder="https://.../api/subscription/eyJ2Ijox..."
+                required
+              />
+
+              <button className="primary-button danger-primary" type="submit" disabled={isInvalidating}>
+                {isInvalidating ? "失效中..." : "确认失效"}
+              </button>
+
+              {invalidateError ? <p className="message error">{invalidateError}</p> : null}
+              {invalidateStatus ? <p className="message success">{invalidateStatus}</p> : null}
+            </form>
           )}
         </section>
 
@@ -307,7 +429,7 @@ export default function Home() {
               <p>仅保存在当前浏览器，最多显示 20 条。</p>
             </div>
             <div className="history-actions">
-              {historyStatus ? <span>{historyStatus}</span> : null}
+              {historyStatus ? <span className={historyStatusKind === "error" ? "error" : undefined}>{historyStatus}</span> : null}
               {links.length > 0 ? (
                 <button className="secondary-button" type="button" onClick={() => setLinks([])}>
                   清空
@@ -331,14 +453,18 @@ export default function Home() {
               </div>
               <div className="link-table-body">
                 {links.map((link) => (
-                  <article className="link-row" role="row" key={link.token}>
+                  <article className={link.invalidatedAt ? "link-row invalidated" : "link-row"} role="row" key={link.token}>
                     <div className="link-meta" role="cell">
                       <div className="link-title-row">
                         <strong>{link.label || "未命名链接"}</strong>
                         {link.source === "extended" ? <b>已延长</b> : null}
+                        {link.invalidatedAt ? <b className="danger">已失效</b> : null}
                       </div>
                       {link.previousExpiresAt ? (
                         <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small>
+                      ) : null}
+                      {link.invalidatedAt ? (
+                        <small>失效：{new Date(link.invalidatedAt).toLocaleString()}</small>
                       ) : null}
                     </div>
                     <time role="cell" dateTime={link.expiresAt}>
@@ -348,6 +474,14 @@ export default function Home() {
                     <div className="row-actions" role="cell">
                       <button className="secondary-button compact" type="button" onClick={() => copyLink(link.url)}>
                         复制
+                      </button>
+                      <button
+                        className="secondary-button compact danger-button"
+                        type="button"
+                        disabled={Boolean(link.invalidatedAt) || invalidatingToken === link.token}
+                        onClick={() => invalidateGeneratedLink(link)}
+                      >
+                        {link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}
                       </button>
                       <a className="icon-link" href={link.url} target="_blank" rel="noreferrer" aria-label="打开链接">
                         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -500,7 +634,11 @@ function useDurationMinutes(value: string, unit: ExpiryUnit): number {
   }, [unit, value]);
 }
 
-async function postLink(endpoint: string, payload: object, fallbackMessage: string): Promise<LinkResponse> {
+async function postJson<T extends { error?: string }>(
+  endpoint: string,
+  payload: object,
+  fallbackMessage: string
+): Promise<T> {
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -508,17 +646,49 @@ async function postLink(endpoint: string, payload: object, fallbackMessage: stri
     },
     body: JSON.stringify(payload)
   });
-  const data = (await response.json()) as LinkResponse;
+  const data = (await response.json()) as T;
 
   if (!response.ok) {
     throw new Error(data.error || fallbackMessage);
   }
+
+  return data;
+}
+
+async function postLink(endpoint: string, payload: object, fallbackMessage: string): Promise<LinkResponse> {
+  const data = await postJson<LinkResponse>(endpoint, payload, fallbackMessage);
 
   if (!data.url || !data.token || !data.expiresAt || !data.expiresInSeconds) {
     throw new Error("接口返回的数据不完整");
   }
 
   return data;
+}
+
+async function postInvalidateLink(
+  endpoint: string,
+  payload: object,
+  fallbackMessage: string
+): Promise<InvalidateResponse> {
+  const data = await postJson<InvalidateResponse>(endpoint, payload, fallbackMessage);
+
+  if (!data.token || !data.invalidatedAt || !data.expiresAt) {
+    throw new Error("接口返回的数据不完整");
+  }
+
+  return data;
+}
+
+function getInvalidateStatus(data: InvalidateResponse): string {
+  if (data.alreadyInvalidated) {
+    return "链接此前已失效";
+  }
+
+  if (data.alreadyExpired) {
+    return "链接已经过期，已记录为失效";
+  }
+
+  return "链接已失效";
 }
 
 function toGeneratedLink(
