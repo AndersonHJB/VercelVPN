@@ -162,7 +162,7 @@ export default function Home() {
         <div className="app-header-inner">
           <div className="brand-lockup">
             <span className="brand-mark" aria-hidden="true">
-              Y
+              <img src="/yaml-link-logo.png" alt="" width={44} height={44} />
             </span>
             <div>
               <strong>YAML Link Manager</strong>
