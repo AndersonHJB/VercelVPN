@@ -20,17 +20,8 @@ type LinkResponse = {
   label?: string;
   expiresAt?: string;
   expiresInSeconds?: number;
-  createdAt?: string;
   previousExpiresAt?: string;
   wasExpired?: boolean;
-  source?: "created" | "extended";
-  historyCached?: boolean;
-  error?: string;
-};
-
-type HistoryResponse = {
-  enabled?: boolean;
-  links?: GeneratedLink[];
   error?: string;
 };
 
@@ -64,30 +55,24 @@ export default function Home() {
   const [historyStatus, setHistoryStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExtending, setIsExtending] = useState(false);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [hasLoadedLocalHistory, setHasLoadedLocalHistory] = useState(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(storageKey);
 
-    if (saved) {
-      try {
-        setLinks(JSON.parse(saved) as GeneratedLink[]);
-      } catch {
-        window.localStorage.removeItem(storageKey);
-      }
-    }
-
-    setHasLoadedLocalHistory(true);
-  }, []);
-
-  useEffect(() => {
-    if (!hasLoadedLocalHistory) {
+    if (!saved) {
       return;
     }
 
-    window.localStorage.setItem(storageKey, JSON.stringify(links));
-  }, [hasLoadedLocalHistory, links]);
+    try {
+      setLinks(JSON.parse(saved) as GeneratedLink[]);
+    } catch {
+      window.localStorage.removeItem(storageKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(storageKey, JSON.stringify(links.slice(0, 20)));
+  }, [links]);
 
   const ttlMinutes = useDurationMinutes(durationValue, durationUnit);
   const extendTtlMinutes = useDurationMinutes(extendDurationValue, extendDurationUnit);
@@ -119,8 +104,8 @@ export default function Home() {
         source: "created"
       });
 
-      setLinks((current) => mergeLinks([nextLink], current));
-      setStatus(data.historyCached ? "链接已生成，已写入永久缓存" : "链接已生成，已加入最近列表");
+      setLinks((current) => [nextLink, ...current].slice(0, 20));
+      setStatus("链接已生成，已加入右侧列表");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "生成链接失败");
     } finally {
@@ -157,71 +142,12 @@ export default function Home() {
         source: "extended"
       });
 
-      setLinks((current) => mergeLinks([nextLink], current));
-      setExtendStatus(
-        data.wasExpired
-          ? "过期链接已延长，已生成新的替代链接"
-          : data.historyCached
-            ? "链接已延长，新的替代链接已写入永久缓存"
-            : "链接已延长，已生成新的替代链接"
-      );
+      setLinks((current) => [nextLink, ...current].slice(0, 20));
+      setExtendStatus(data.wasExpired ? "过期链接已延长，已生成新的替代链接" : "链接已延长，已生成新的替代链接");
     } catch (caught) {
       setExtendError(caught instanceof Error ? caught.message : "延长链接失败");
     } finally {
       setIsExtending(false);
-    }
-  }
-
-  async function loadPersistentHistory() {
-    setHistoryStatus("");
-
-    if (!password.trim()) {
-      setHistoryStatus("先输入管理员密码");
-      return;
-    }
-
-    setIsLoadingHistory(true);
-
-    try {
-      const data = await postHistory({ password, action: "list" });
-
-      if (!data.enabled) {
-        setHistoryStatus("未配置 KV，当前使用本地缓存");
-        return;
-      }
-
-      const storedLinks = data.links || [];
-
-      setLinks((current) => mergeLinks(storedLinks, current));
-      setHistoryStatus(storedLinks.length > 0 ? `已同步 ${storedLinks.length} 条缓存` : "永久缓存为空");
-    } catch (caught) {
-      setHistoryStatus(caught instanceof Error ? caught.message : "同步缓存失败");
-    } finally {
-      setIsLoadingHistory(false);
-    }
-  }
-
-  async function clearHistory() {
-    setLinks([]);
-    window.localStorage.removeItem(storageKey);
-
-    if (!password.trim()) {
-      setHistoryStatus("已清空本地记录");
-      return;
-    }
-
-    setIsLoadingHistory(true);
-
-    try {
-      const data = await postHistory({ password, action: "clear" });
-
-      setHistoryStatus(data.enabled ? "已清空永久缓存和本地记录" : "已清空本地记录");
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "清空永久缓存失败";
-
-      setHistoryStatus(`本地已清空，永久缓存未清空：${message}`);
-    } finally {
-      setIsLoadingHistory(false);
     }
   }
 
@@ -235,7 +161,9 @@ export default function Home() {
       <header className="app-header">
         <div className="app-header-inner">
           <div className="brand-lockup">
-            <img className="brand-logo" src="/brand-logo.png" alt="" width={42} height={42} aria-hidden="true" />
+            <span className="brand-mark" aria-hidden="true">
+              Y
+            </span>
             <div>
               <strong>YAML Link Manager</strong>
               <span>限时 YAML 访问控制</span>
@@ -376,15 +304,12 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <h2 id="history-title">最近生成</h2>
-              <p>本地持久保存；配置 Redis 后可跨设备同步。</p>
+              <p>仅保存在当前浏览器，最多显示 20 条。</p>
             </div>
             <div className="history-actions">
-              {historyStatus ? <span className="history-status">{historyStatus}</span> : null}
-              <button className="secondary-button" type="button" onClick={loadPersistentHistory} disabled={isLoadingHistory}>
-                {isLoadingHistory ? "同步中..." : "同步缓存"}
-              </button>
+              {historyStatus ? <span>{historyStatus}</span> : null}
               {links.length > 0 ? (
-                <button className="secondary-button" type="button" onClick={clearHistory} disabled={isLoadingHistory}>
+                <button className="secondary-button" type="button" onClick={() => setLinks([])}>
                   清空
                 </button>
               ) : null}
@@ -596,23 +521,6 @@ async function postLink(endpoint: string, payload: object, fallbackMessage: stri
   return data;
 }
 
-async function postHistory(payload: { password: string; action: "list" | "clear" }): Promise<HistoryResponse> {
-  const response = await fetch("/api/history", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-  const data = (await response.json()) as HistoryResponse;
-
-  if (!response.ok) {
-    throw new Error(data.error || "缓存操作失败");
-  }
-
-  return data;
-}
-
 function toGeneratedLink(
   data: LinkResponse,
   options: {
@@ -626,34 +534,9 @@ function toGeneratedLink(
     expiresAt: data.expiresAt as string,
     expiresInSeconds: data.expiresInSeconds as number,
     label: options.label || undefined,
-    createdAt: data.createdAt || new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     previousExpiresAt: data.previousExpiresAt,
     wasExpired: data.wasExpired,
-    source: data.source || options.source
+    source: options.source
   };
-}
-
-function mergeLinks(nextLinks: GeneratedLink[], currentLinks: GeneratedLink[]): GeneratedLink[] {
-  const linksByToken = new Map<string, GeneratedLink>();
-
-  for (const link of [...nextLinks, ...currentLinks]) {
-    linksByToken.set(link.token, normalizeLink(link));
-  }
-
-  return Array.from(linksByToken.values()).sort((left, right) => {
-    return parseTime(right.createdAt) - parseTime(left.createdAt);
-  });
-}
-
-function normalizeLink(link: GeneratedLink): GeneratedLink {
-  return {
-    ...link,
-    createdAt: link.createdAt || new Date().toISOString()
-  };
-}
-
-function parseTime(value: string): number {
-  const time = Date.parse(value);
-
-  return Number.isFinite(time) ? time : 0;
 }

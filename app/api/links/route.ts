@@ -9,7 +9,6 @@ import {
   parseCreateExpiry,
   sanitizeLabel
 } from "@/lib/link-admin";
-import { appendStoredLink } from "@/lib/history-store";
 import { createSignedToken, requireLinkSecret, type LinkPayload } from "@/lib/token";
 
 type CreateLinkBody = {
@@ -51,36 +50,13 @@ export async function POST(request: Request) {
 
     const token = createSignedToken(payload, requireLinkSecret());
     const url = buildSubscriptionUrl(request, token);
-    const createdAt = new Date(nowSeconds * 1000).toISOString();
-    const expiresAt = new Date(expiresAtSeconds * 1000).toISOString();
-    const expiresInSeconds = expiresAtSeconds - nowSeconds;
-    let historyCached = false;
-
-    try {
-      const history = await appendStoredLink({
-        url,
-        token,
-        label: payload.label,
-        expiresAt,
-        expiresInSeconds,
-        createdAt,
-        source: "created"
-      });
-
-      historyCached = history.enabled;
-    } catch {
-      historyCached = false;
-    }
 
     return NextResponse.json({
       url,
       token,
       label: payload.label,
-      expiresAt,
-      expiresInSeconds,
-      createdAt,
-      source: "created",
-      historyCached
+      expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
+      expiresInSeconds: expiresAtSeconds - nowSeconds
     });
   } catch (error) {
     if (error instanceof BadRequestError) {
