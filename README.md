@@ -10,6 +10,7 @@
 - 链接过期后返回 `410 Gone`，不再暴露 YAML 内容。
 - 无数据库：链接 token 使用 `LINK_SECRET` 做 HMAC 签名。
 - 管理页需要 `ADMIN_PASSWORD` 才能生成链接。
+- YAML 来源支持环境变量内容、本地文件、远程 YAML 链接。
 - YAML 不放在 `public/`，避免绕过服务端校验。
 
 ## 工作原理
@@ -60,15 +61,37 @@ openssl rand -base64 32
 ```bash
 ADMIN_PASSWORD=你的管理员密码
 LINK_SECRET=刚才 openssl 生成的随机字符串
+YAML_CONTENT=
+YAML_SOURCE_URL=
 YAML_FILE_PATH=data/subscription.yaml
 MAX_LINK_TTL_DAYS=365
 ```
 
 `LINK_SECRET` 至少 32 个字符。不要把 `.env.local` 提交到 GitHub。
 
-### 4. 放入 YAML 文件
+### 4. 配置 YAML 来源
 
-本地开发可以复制示例文件：
+项目支持三种 YAML 来源，优先级从高到低是：
+
+1. `YAML_CONTENT`：直接把完整 YAML 内容放进环境变量。
+2. `YAML_SOURCE_URL`：从远程订阅链接读取 YAML。
+3. `YAML_FILE_PATH`：读取本地 YAML 文件。
+
+方式 A：直接写入环境变量。
+
+```bash
+YAML_CONTENT="proxies:
+  - name: example
+    type: ss"
+```
+
+方式 B：读取远程 YAML 链接。
+
+```bash
+YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
+```
+
+方式 C：读取本地文件。
 
 ```bash
 cp data/subscription.example.yaml data/subscription.yaml
@@ -76,7 +99,7 @@ cp data/subscription.example.yaml data/subscription.yaml
 
 然后把 `data/subscription.yaml` 替换成你的真实 YAML 内容。
 
-注意：`data/subscription.yaml` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 放到 `public/` 目录。
+注意：如果同时设置了 `YAML_CONTENT` 和 `YAML_SOURCE_URL`，会优先使用 `YAML_CONTENT`。`data/subscription.yaml` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 放到 `public/` 目录。
 
 ### 5. 启动本地服务
 
@@ -176,10 +199,20 @@ Vercel Git 部署文档：<https://vercel.com/docs/git>
 ADMIN_PASSWORD=你的管理员密码
 LINK_SECRET=至少32字符的随机字符串
 YAML_CONTENT=你的完整YAML内容
+YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
+YAML_FILE_PATH=data/subscription.yaml
 MAX_LINK_TTL_DAYS=365
 ```
 
-推荐在 Vercel 上使用 `YAML_CONTENT`，不要依赖 `data/subscription.yaml`，因为真实 YAML 不应该提交到 GitHub。
+三种 YAML 来源选一种即可：
+
+- 小型 YAML：推荐 `YAML_CONTENT`。
+- 已经有订阅源链接：推荐 `YAML_SOURCE_URL`。
+- 本地开发：可以用 `YAML_FILE_PATH`。
+
+如果在 Vercel 上使用 `YAML_SOURCE_URL`，每次访问限时链接时服务端都会去拉取上游 YAML 链接。远程请求有 10 秒超时，且不会缓存。
+
+不要在 Vercel 上依赖 `data/subscription.yaml`，因为真实 YAML 不应该提交到 GitHub。
 
 生成 `LINK_SECRET` 的命令：
 
@@ -187,7 +220,7 @@ MAX_LINK_TTL_DAYS=365
 openssl rand -base64 32
 ```
 
-Vercel 的 Node.js 环境变量总大小限制是 64KB。如果你的 YAML 很大，`YAML_CONTENT` 放不下，需要改成外部存储方案，例如 Vercel Blob、数据库或受保护的对象存储。
+Vercel 的 Node.js 环境变量总大小限制是 64KB。如果你的 YAML 很大，`YAML_CONTENT` 放不下，可以改用 `YAML_SOURCE_URL`，或接入 Vercel Blob、数据库、受保护对象存储。
 
 Vercel 环境变量文档：<https://vercel.com/docs/environment-variables>
 
@@ -283,6 +316,7 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 不要把真实 YAML 放进 `public/`。
 - 不要提交 `.env.local`。
 - 不要把 `ADMIN_PASSWORD` 和 `LINK_SECRET` 发给使用者。
+- 如果 `YAML_SOURCE_URL` 本身是敏感订阅源，不要把它写进 README、前端代码或公开仓库，只放在 Vercel 环境变量里。
 - `LINK_SECRET` 改了以后，所有旧链接都会失效。
 - 无数据库版本不能原地修改旧 URL，也不能单独撤销某一个链接。
 - 如果要支持单个链接撤销、访问次数限制、用户列表、访问日志，需要增加数据库。
@@ -310,7 +344,7 @@ lib/
   auth.ts                          # 管理员密码校验
   link-admin.ts                    # 链接生成和延长的通用规则
   token.ts                         # HMAC token 签名和验证
-  yaml.ts                          # 读取 YAML_CONTENT 或 YAML_FILE_PATH
+  yaml.ts                          # 读取 YAML_CONTENT、YAML_SOURCE_URL 或 YAML_FILE_PATH
 data/
   subscription.example.yaml        # 示例 YAML
 ```
