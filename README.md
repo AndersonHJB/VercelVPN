@@ -11,6 +11,7 @@
 - 无数据库：链接 token 使用 `LINK_SECRET` 做 HMAC 签名。
 - 管理页需要 `ADMIN_PASSWORD` 才能生成链接。
 - YAML 来源支持环境变量内容、本地文件、远程 YAML 链接。
+- 最近生成记录支持本地持久保存；配置 Redis/Upstash 后可永久缓存并跨设备同步。
 - YAML 不放在 `public/`，避免绕过服务端校验。
 
 ## 工作原理
@@ -21,6 +22,8 @@
 4. 用户访问 `/api/subscription/[token]`。
 5. 服务端验证签名和 `exp`。
 6. 验证通过返回 `text/yaml`，过期返回 `410 Gone`。
+
+最近生成记录默认保存在当前浏览器的 `localStorage`。如果配置了 `KV_REST_API_URL` / `KV_REST_API_TOKEN` 或 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`，服务端会把生成/延长后的新链接写入 Redis，不设置过期时间，并通过管理员密码保护 `/api/history` 同步接口。
 
 延长已有链接时，管理页会提交旧链接到 `/api/extend-link`。服务端会允许解析“已过期但签名仍有效”的 token，然后生成一个新的替代链接：
 
@@ -65,6 +68,12 @@ YAML_CONTENT=
 YAML_SOURCE_URL=
 YAML_FILE_PATH=data/subscription.yaml
 MAX_LINK_TTL_DAYS=365
+KV_REST_API_URL=
+KV_REST_API_TOKEN=
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+LINK_HISTORY_KEY=yaml-link-history:v1
+LINK_HISTORY_MAX_ITEMS=500
 ```
 
 `LINK_SECRET` 至少 32 个字符。不要把 `.env.local` 提交到 GitHub。
@@ -202,6 +211,12 @@ YAML_CONTENT=你的完整YAML内容
 YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
 YAML_FILE_PATH=data/subscription.yaml
 MAX_LINK_TTL_DAYS=365
+KV_REST_API_URL=
+KV_REST_API_TOKEN=
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+LINK_HISTORY_KEY=yaml-link-history:v1
+LINK_HISTORY_MAX_ITEMS=500
 ```
 
 三种 YAML 来源选一种即可：
@@ -222,7 +237,16 @@ openssl rand -base64 32
 
 Vercel 的 Node.js 环境变量总大小限制是 64KB。如果你的 YAML 很大，`YAML_CONTENT` 放不下，可以改用 `YAML_SOURCE_URL`，或接入 Vercel Blob、数据库、受保护对象存储。
 
+永久缓存最近生成记录是可选功能：
+
+- 不配置 Redis：最近生成记录只保存在当前浏览器，刷新后仍在，换浏览器或换设备不会同步。
+- 配置 Vercel Marketplace Redis 或 Upstash Redis REST：生成/延长的新链接会写入 Redis，点击管理页里的 `同步缓存` 可以拉取回来。
+- `LINK_HISTORY_MAX_ITEMS` 控制最多保存多少条最近记录，默认 `500`。缓存本身不设置过期时间。
+
+Vercel KV 已不再面向新项目提供。新项目请在 Vercel Marketplace 里接入 Redis；如果是旧 KV 项目或迁移后的 Upstash 项目，常见变量名是 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`。如果直接使用 Upstash，请填 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN`，代码也会自动识别。
+
 Vercel 环境变量文档：<https://vercel.com/docs/environment-variables>
+Vercel Redis 文档：<https://vercel.com/docs/redis>
 
 ### 5. 点击 Deploy
 
@@ -302,6 +326,14 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 
 注意：延长后得到的是新 URL，旧 URL 不会变。无数据库版本无法让旧 URL 原地恢复可用。
 
+### 同步永久缓存
+
+1. 在 Vercel 配置 Redis REST 环境变量，重新部署。
+2. 每次生成或延长链接后，服务端会自动写入永久缓存。
+3. 换浏览器或换设备时，先输入 `ADMIN_PASSWORD`。
+4. 点击 `同步缓存`，最近生成的链接会合并到当前列表。
+5. 点击 `清空` 会清空本地记录；如果已经输入管理员密码且 KV 已配置，也会清空永久缓存。
+
 ### 立即让所有链接失效
 
 1. 打开 Vercel 项目设置。
@@ -317,6 +349,7 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 不要提交 `.env.local`。
 - 不要把 `ADMIN_PASSWORD` 和 `LINK_SECRET` 发给使用者。
 - 如果 `YAML_SOURCE_URL` 本身是敏感订阅源，不要把它写进 README、前端代码或公开仓库，只放在 Vercel 环境变量里。
+- 最近生成缓存里包含可访问 YAML 的完整链接，同样要视为敏感数据。
 - `LINK_SECRET` 改了以后，所有旧链接都会失效。
 - 无数据库版本不能原地修改旧 URL，也不能单独撤销某一个链接。
 - 如果要支持单个链接撤销、访问次数限制、用户列表、访问日志，需要增加数据库。
@@ -338,13 +371,17 @@ app/
   api/
     links/route.ts                 # 生成签名链接
     extend-link/route.ts           # 延长已有链接并生成替代链接
+    history/route.ts               # 管理员密码保护的永久缓存同步接口
     subscription/[token]/route.ts  # 校验 token 并返回 YAML
   page.tsx                         # 管理页面
 lib/
   auth.ts                          # 管理员密码校验
+  history-store.ts                 # Vercel KV / Upstash 最近链接缓存
   link-admin.ts                    # 链接生成和延长的通用规则
   token.ts                         # HMAC token 签名和验证
   yaml.ts                          # 读取 YAML_CONTENT、YAML_SOURCE_URL 或 YAML_FILE_PATH
 data/
   subscription.example.yaml        # 示例 YAML
+public/
+  brand-logo.png                   # 管理页 logo
 ```

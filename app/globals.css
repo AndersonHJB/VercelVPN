@@ -83,17 +83,17 @@ button:disabled {
   gap: 12px;
 }
 
-.brand-mark {
-  width: 38px;
-  height: 38px;
+.brand-logo {
+  width: 42px;
+  height: 42px;
   flex: 0 0 auto;
-  display: inline-grid;
-  place-items: center;
+  display: block;
   border-radius: 8px;
   background: #f7fffd;
-  color: var(--accent-strong);
-  font-size: 1.18rem;
-  font-weight: 900;
+  object-fit: cover;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.48),
+    0 8px 20px rgba(2, 44, 42, 0.2);
 }
 
 .brand-lockup strong {
@@ -365,13 +365,18 @@ h2 {
 .history-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
-.history-actions span {
+.history-status {
+  max-width: 280px;
+  overflow: hidden;
   color: var(--success);
   font-size: 0.82rem;
   font-weight: 800;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -566,9 +571,24 @@ code {
     padding: 16px;
   }
 
+  .panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .field-grid,
   .duration-row {
     grid-template-columns: 1fr;
+  }
+
+  .history-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .history-status {
+    width: 100%;
+    max-width: none;
   }
 
   .segmented {
@@ -626,13 +646,12 @@ code {
     font-size: 0.98rem;
   }
 
-  .panel-heading {
-    align-items: flex-start;
-    flex-direction: column;
+  .history-actions {
+    justify-content: space-between;
   }
 
-  .history-actions {
-    width: 100%;
-    justify-content: space-between;
+  .history-actions .secondary-button {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }

@@ -9,6 +9,7 @@ import {
   parseExtendedExpiry,
   sanitizeLabel
 } from "@/lib/link-admin";
+import { appendStoredLink } from "@/lib/history-store";
 import { createSignedToken, requireLinkSecret, type LinkPayload, verifySignedToken } from "@/lib/token";
 
 type ExtendLinkBody = {
@@ -63,15 +64,41 @@ export async function POST(request: Request) {
 
     const token = createSignedToken(payload, secret);
     const url = buildSubscriptionUrl(request, token);
+    const createdAt = new Date(nowSeconds * 1000).toISOString();
+    const expiresAt = new Date(expiresAtSeconds * 1000).toISOString();
+    const previousExpiresAt = new Date(previousExpiresAtSeconds * 1000).toISOString();
+    const expiresInSeconds = expiresAtSeconds - nowSeconds;
+    let historyCached = false;
+
+    try {
+      const history = await appendStoredLink({
+        url,
+        token,
+        label: payload.label,
+        expiresAt,
+        expiresInSeconds,
+        previousExpiresAt,
+        wasExpired: verification.expired,
+        createdAt,
+        source: "extended"
+      });
+
+      historyCached = history.enabled;
+    } catch {
+      historyCached = false;
+    }
 
     return NextResponse.json({
       url,
       token,
       label: payload.label,
-      expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
-      expiresInSeconds: expiresAtSeconds - nowSeconds,
-      previousExpiresAt: new Date(previousExpiresAtSeconds * 1000).toISOString(),
-      wasExpired: verification.expired
+      expiresAt,
+      expiresInSeconds,
+      previousExpiresAt,
+      wasExpired: verification.expired,
+      createdAt,
+      source: "extended",
+      historyCached
     });
   } catch (error) {
     if (error instanceof BadRequestError) {
