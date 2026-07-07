@@ -78,6 +78,11 @@ button:disabled {
   justify-content: space-between;
 }
 
+.form-column {
+  display: grid;
+  gap: 20px;
+}
+
 .brand-row {
   display: flex;
   gap: 12px;
@@ -130,6 +135,17 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+.form-title {
+  display: grid;
+  gap: 5px;
+}
+
+.form-title p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
 }
 
 .field-grid {
@@ -295,13 +311,34 @@ h2 {
   gap: 4px;
 }
 
+.link-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .link-meta span {
   font-weight: 800;
+}
+
+.link-title-row b {
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  line-height: 1.4;
 }
 
 .link-meta time {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.link-meta small {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 code {

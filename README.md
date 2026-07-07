@@ -5,6 +5,8 @@
 ## 功能
 
 - 为同一个 YAML 文件生成多个不同有效期的链接。
+- 对某个已有链接增加有效期。
+- 已过期但签名有效的链接，也可以由管理员延长并生成新的替代链接。
 - 链接过期后返回 `410 Gone`，不再暴露 YAML 内容。
 - 无数据库：链接 token 使用 `LINK_SECRET` 做 HMAC 签名。
 - 管理页需要 `ADMIN_PASSWORD` 才能生成链接。
@@ -19,7 +21,13 @@
 5. 服务端验证签名和 `exp`。
 6. 验证通过返回 `text/yaml`，过期返回 `410 Gone`。
 
-这个方案是无状态的，所以不能单独提前撤销某一个链接。需要让所有已生成链接立即失效时，修改 Vercel 环境变量里的 `LINK_SECRET` 并重新部署。
+延长已有链接时，管理页会提交旧链接到 `/api/extend-link`。服务端会允许解析“已过期但签名仍有效”的 token，然后生成一个新的替代链接：
+
+- 旧链接未过期：在旧链接原过期时间基础上增加时长。
+- 旧链接已过期：从当前时间开始增加时长。
+- 指定新的过期时间时，新时间必须晚于旧过期时间或当前时间。
+
+这个方案是无状态的，所以不能原地修改同一个 URL，也不能单独提前撤销某一个链接。需要让所有已生成链接立即失效时，修改 Vercel 环境变量里的 `LINK_SECRET` 并重新部署。
 
 ## 本地运行教程
 
@@ -242,6 +250,25 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 
 每次生成的链接都有独立 token。即使有效期相同，链接也不同。
 
+### 延长已有链接
+
+1. 打开你的 Vercel 域名。
+2. 找到 `延长已有链接` 区域。
+3. 输入 `ADMIN_PASSWORD`。
+4. 粘贴完整旧链接，或只粘贴 token。
+5. 可选填写 `新备注`，留空会沿用旧备注。
+6. 选择 `按时长` 或 `指定时间`。
+7. 点击 `延长并生成新链接`。
+8. 复制新生成的替代链接发给使用者。
+
+延长规则：
+
+- 旧链接还没过期：例如原本明天过期，增加 7 天后，会变成从明天再往后 7 天。
+- 旧链接已经过期：例如昨天过期，增加 7 天后，会变成从现在开始 7 天。
+- 旧链接 token 被篡改：不能延长，会返回 `Invalid link.`。
+
+注意：延长后得到的是新 URL，旧 URL 不会变。无数据库版本无法让旧 URL 原地恢复可用。
+
 ### 立即让所有链接失效
 
 1. 打开 Vercel 项目设置。
@@ -257,7 +284,7 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 不要提交 `.env.local`。
 - 不要把 `ADMIN_PASSWORD` 和 `LINK_SECRET` 发给使用者。
 - `LINK_SECRET` 改了以后，所有旧链接都会失效。
-- 无数据库版本不能单独撤销某一个链接。
+- 无数据库版本不能原地修改旧 URL，也不能单独撤销某一个链接。
 - 如果要支持单个链接撤销、访问次数限制、用户列表、访问日志，需要增加数据库。
 
 ## 常用命令
@@ -276,10 +303,12 @@ npm audit --omit=dev
 app/
   api/
     links/route.ts                 # 生成签名链接
-    subscription/[token]/route.ts   # 校验 token 并返回 YAML
+    extend-link/route.ts           # 延长已有链接并生成替代链接
+    subscription/[token]/route.ts  # 校验 token 并返回 YAML
   page.tsx                         # 管理页面
 lib/
   auth.ts                          # 管理员密码校验
+  link-admin.ts                    # 链接生成和延长的通用规则
   token.ts                         # HMAC token 签名和验证
   yaml.ts                          # 读取 YAML_CONTENT 或 YAML_FILE_PATH
 data/

@@ -2,6 +2,13 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 
 import { isAdminPasswordValid } from "@/lib/auth";
+import {
+  assertWithinMaxTtl,
+  BadRequestError,
+  buildSubscriptionUrl,
+  parseCreateExpiry,
+  sanitizeLabel
+} from "@/lib/link-admin";
 import { createSignedToken, requireLinkSecret, type LinkPayload } from "@/lib/token";
 
 type CreateLinkBody = {
@@ -26,16 +33,8 @@ export async function POST(request: Request) {
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const expiresAtSeconds = parseExpiry(body, nowSeconds);
-    const maxTtlDays = parseMaxTtlDays();
-    const maxTtlSeconds = maxTtlDays * 24 * 60 * 60;
-
-    if (expiresAtSeconds - nowSeconds > maxTtlSeconds) {
-      return NextResponse.json(
-        { error: `Expiry cannot be more than ${maxTtlDays} days from now.` },
-        { status: 400 }
-      );
-    }
+    const expiresAtSeconds = parseCreateExpiry(body, nowSeconds);
+    assertWithinMaxTtl(expiresAtSeconds, nowSeconds);
 
     const payload: LinkPayload = {
       v: 1,
@@ -50,12 +49,12 @@ export async function POST(request: Request) {
     }
 
     const token = createSignedToken(payload, requireLinkSecret());
-    const origin = new URL(request.url).origin;
-    const url = `${origin}/api/subscription/${encodeURIComponent(token)}`;
+    const url = buildSubscriptionUrl(request, token);
 
     return NextResponse.json({
       url,
       token,
+      label: payload.label,
       expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
       expiresInSeconds: expiresAtSeconds - nowSeconds
     });
@@ -69,56 +68,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-
-function parseExpiry(body: CreateLinkBody, nowSeconds: number): number {
-  if (typeof body.expiresAt === "string" && body.expiresAt.length > 0) {
-    const expiresAtMs = Date.parse(body.expiresAt);
-
-    if (Number.isNaN(expiresAtMs)) {
-      throw new BadRequestError("expiresAt is not a valid date.");
-    }
-
-    const expiresAtSeconds = Math.floor(expiresAtMs / 1000);
-
-    if (expiresAtSeconds <= nowSeconds) {
-      throw new BadRequestError("Expiry must be in the future.");
-    }
-
-    return expiresAtSeconds;
-  }
-
-  const ttlMinutes =
-    typeof body.ttlMinutes === "number" ? body.ttlMinutes : Number(body.ttlMinutes);
-
-  if (!Number.isFinite(ttlMinutes) || ttlMinutes <= 0) {
-    throw new BadRequestError("ttlMinutes must be a positive number.");
-  }
-
-  return nowSeconds + Math.floor(ttlMinutes * 60);
-}
-
-function parseMaxTtlDays(): number {
-  const value = Number(process.env.MAX_LINK_TTL_DAYS || "365");
-
-  if (!Number.isFinite(value) || value <= 0) {
-    return 365;
-  }
-
-  return Math.floor(value);
-}
-
-function sanitizeLabel(label: unknown): string | undefined {
-  if (typeof label !== "string") {
-    return undefined;
-  }
-
-  const trimmed = label.trim();
-
-  if (!trimmed) {
-    return undefined;
-  }
-
-  return trimmed.slice(0, 80);
-}
-
-class BadRequestError extends Error {}

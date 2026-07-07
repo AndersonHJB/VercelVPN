@@ -9,8 +9,12 @@ export type LinkPayload = {
 };
 
 export type TokenVerification =
-  | { ok: true; payload: LinkPayload }
+  | { ok: true; payload: LinkPayload; expired: boolean }
   | { ok: false; status: number; message: string };
+
+export type VerifySignedTokenOptions = {
+  allowExpired?: boolean;
+};
 
 export function requireLinkSecret(): string {
   const secret = process.env.LINK_SECRET;
@@ -32,7 +36,8 @@ export function createSignedToken(payload: LinkPayload, secret: string): string 
 export function verifySignedToken(
   token: string,
   secret: string,
-  nowSeconds = Math.floor(Date.now() / 1000)
+  nowSeconds = Math.floor(Date.now() / 1000),
+  options: VerifySignedTokenOptions = {}
 ): TokenVerification {
   if (!token || token.length > 4096) {
     return { ok: false, status: 400, message: "Invalid link." };
@@ -63,11 +68,13 @@ export function verifySignedToken(
     return { ok: false, status: 400, message: "Invalid link." };
   }
 
-  if (payload.exp <= nowSeconds) {
+  const expired = payload.exp <= nowSeconds;
+
+  if (expired && !options.allowExpired) {
     return { ok: false, status: 410, message: "This link has expired." };
   }
 
-  return { ok: true, payload };
+  return { ok: true, payload, expired };
 }
 
 function sign(encodedPayload: string, secret: string): string {
