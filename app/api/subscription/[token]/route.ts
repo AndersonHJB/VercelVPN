@@ -8,6 +8,8 @@ type RouteContext = {
   }>;
 };
 
+const subscriptionFilename = "subscription.yaml";
+
 export async function GET(_request: Request, context: RouteContext) {
   const { token } = await context.params;
   const decodedToken = decodeURIComponent(token);
@@ -41,7 +43,7 @@ export async function GET(_request: Request, context: RouteContext) {
       status: 200,
       headers: {
         "content-type": "text/yaml; charset=utf-8",
-        "content-disposition": 'inline; filename="subscription.yaml"',
+        "content-disposition": `inline; filename=${subscriptionFilename}`,
         "cache-control": "private, no-store, max-age=0",
         "x-content-type-options": "nosniff"
       }
