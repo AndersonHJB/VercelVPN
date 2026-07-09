@@ -28,9 +28,15 @@ async function readYamlFromFile(yamlPath: string): Promise<string> {
 
   try {
     content = await readFile(resolvedPath, "utf8");
-  } catch {
+  } catch (error) {
+    if (isFileNotFoundError(error)) {
+      throw new Error(
+        `YAML_FILE_PATH file "${yamlPath}" was not found. On Vercel, the file must be committed and redeployed, or use YAML_SOURCE_URL for remote subscriptions.`
+      );
+    }
+
     throw new Error(
-      "YAML content is not configured. Set YAML_CONTENT, YAML_SOURCE_URL, or create the YAML_FILE_PATH file."
+      `Unable to read YAML_FILE_PATH file "${yamlPath}". Set YAML_CONTENT, YAML_SOURCE_URL, or provide a readable YAML_FILE_PATH file.`
     );
   }
 
@@ -60,6 +66,15 @@ function parseLocalYamlUrlFile(content: string): string | undefined {
   }
 
   return line;
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
 }
 
 async function fetchYamlFromUrl(url: string, sourceName: string): Promise<string> {
