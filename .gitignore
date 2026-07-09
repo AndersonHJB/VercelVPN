@@ -7,7 +7,7 @@ dist
 .env*.local
 
 data/subscription.yaml
-data/iggfeed.txt
+# data/iggfeed.txt
 data/revoked-links.json
 tsconfig.tsbuildinfo
 
