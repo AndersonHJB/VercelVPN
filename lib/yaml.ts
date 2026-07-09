@@ -14,7 +14,7 @@ export async function getYamlContent(): Promise<string> {
   const remoteYamlUrl = process.env.YAML_SOURCE_URL?.trim();
 
   if (remoteYamlUrl) {
-    return fetchYamlFromUrl(remoteYamlUrl);
+    return fetchYamlFromUrl(remoteYamlUrl, "YAML_SOURCE_URL");
   }
 
   const yamlPath = process.env.YAML_FILE_PATH?.trim() || defaultYamlPath;
@@ -24,18 +24,46 @@ export async function getYamlContent(): Promise<string> {
 
 async function readYamlFromFile(yamlPath: string): Promise<string> {
   const resolvedPath = path.isAbsolute(yamlPath) ? yamlPath : path.join(process.cwd(), yamlPath);
+  let content: string;
 
   try {
-    return await readFile(resolvedPath, "utf8");
+    content = await readFile(resolvedPath, "utf8");
   } catch {
     throw new Error(
       "YAML content is not configured. Set YAML_CONTENT, YAML_SOURCE_URL, or create the YAML_FILE_PATH file."
     );
   }
+
+  const linkedYamlUrl = parseLocalYamlUrlFile(content);
+
+  if (linkedYamlUrl) {
+    return fetchYamlFromUrl(linkedYamlUrl, `URL in ${yamlPath}`);
+  }
+
+  return content;
 }
 
-async function fetchYamlFromUrl(url: string): Promise<string> {
-  assertValidYamlUrl(url);
+function parseLocalYamlUrlFile(content: string): string | undefined {
+  const meaningfulLines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+
+  if (meaningfulLines.length !== 1) {
+    return undefined;
+  }
+
+  const [line] = meaningfulLines;
+
+  if (!line.startsWith("http://") && !line.startsWith("https://")) {
+    return undefined;
+  }
+
+  return line;
+}
+
+async function fetchYamlFromUrl(url: string, sourceName: string): Promise<string> {
+  assertValidYamlUrl(url, sourceName);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), remoteYamlTimeoutMs);
@@ -62,25 +90,25 @@ async function fetchYamlFromUrl(url: string): Promise<string> {
     return content;
   } catch (error) {
     if (error instanceof Error) {
-      throw new Error(`Unable to fetch YAML_SOURCE_URL: ${error.message}`);
+      throw new Error(`Unable to fetch ${sourceName}: ${error.message}`);
     }
 
-    throw new Error("Unable to fetch YAML_SOURCE_URL.");
+    throw new Error(`Unable to fetch ${sourceName}.`);
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function assertValidYamlUrl(url: string) {
+function assertValidYamlUrl(url: string, sourceName: string) {
   let parsed: URL;
 
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error("YAML_SOURCE_URL is not a valid URL.");
+    throw new Error(`${sourceName} is not a valid URL.`);
   }
 
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("YAML_SOURCE_URL must start with http:// or https://.");
+    throw new Error(`${sourceName} must start with http:// or https://.`);
   }
 }

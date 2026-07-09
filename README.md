@@ -13,7 +13,7 @@
 - 链接 token 使用 `LINK_SECRET` 做 HMAC 签名；单链接失效只存 token 哈希。
 - 管理页需要 `ADMIN_PASSWORD` 才能生成、查询、延长或失效链接。
 - 管理页可以把管理员密码记住在当前浏览器的本地缓存里。
-- YAML 来源支持环境变量内容、本地文件、远程 YAML 链接。
+- YAML 来源支持环境变量内容、本地 YAML 文件、远程 YAML 链接，以及本地 txt 文件中的远程 YAML 链接。
 - YAML 不放在 `public/`，避免绕过服务端校验。
 
 ## 工作原理
@@ -84,7 +84,7 @@ REVOKED_LINKS_FILE_PATH=data/revoked-links.json
 
 1. `YAML_CONTENT`：直接把完整 YAML 内容放进环境变量。
 2. `YAML_SOURCE_URL`：从远程订阅链接读取 YAML。
-3. `YAML_FILE_PATH`：读取本地 YAML 文件。
+3. `YAML_FILE_PATH`：读取本地 YAML 文件，或读取本地 txt 文件中的远程 YAML 链接。
 
 方式 A：直接写入环境变量。
 
@@ -108,7 +108,21 @@ cp data/subscription.example.yaml data/subscription.yaml
 
 然后把 `data/subscription.yaml` 替换成你的真实 YAML 内容。
 
-注意：如果同时设置了 `YAML_CONTENT` 和 `YAML_SOURCE_URL`，会优先使用 `YAML_CONTENT`。`data/subscription.yaml` 和 `data/revoked-links.json` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 放到 `public/` 目录。
+也可以让本地文件只保存一个上游订阅 URL：
+
+```bash
+cp data/iggfeed.example.txt data/iggfeed.txt
+```
+
+然后把 `data/iggfeed.txt` 替换成真实 URL，并设置：
+
+```bash
+YAML_FILE_PATH=data/iggfeed.txt
+```
+
+`data/iggfeed.txt` 去掉空行和 `#` 注释后只能有一行，且这一行必须是 `http://` 或 `https://` 链接。服务端会读取这个本地文件，再拉取该链接对应的 YAML。
+
+注意：如果同时设置了 `YAML_CONTENT` 和 `YAML_SOURCE_URL`，会优先使用 `YAML_CONTENT`。`data/subscription.yaml`、`data/iggfeed.txt` 和 `data/revoked-links.json` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 或真实订阅链接放到 `public/` 目录。
 
 ### 5. 启动本地服务
 
@@ -211,6 +225,7 @@ LINK_SECRET=至少32字符的随机字符串
 YAML_CONTENT=你的完整YAML内容
 YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
 YAML_FILE_PATH=data/subscription.yaml
+# 或者 YAML_FILE_PATH=data/iggfeed.txt
 MAX_LINK_TTL_DAYS=365
 KV_REST_API_URL=你的 KV 或 Upstash REST URL
 KV_REST_API_TOKEN=你的 KV 或 Upstash REST token
@@ -220,13 +235,13 @@ KV_REST_API_TOKEN=你的 KV 或 Upstash REST token
 
 - 小型 YAML：推荐 `YAML_CONTENT`。
 - 已经有订阅源链接：推荐 `YAML_SOURCE_URL`。
-- 本地开发：可以用 `YAML_FILE_PATH`。
+- 本地开发：可以用 `YAML_FILE_PATH=data/subscription.yaml` 读取本地 YAML，或用 `YAML_FILE_PATH=data/iggfeed.txt` 读取本地 txt 中保存的订阅 URL。
 
 如果你需要在 Vercel 上使用“单链接失效”，请配置 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`。如果你使用自建 Upstash 兼容 REST 存储，也可以改用 `LINK_REVOCATION_UPSTASH_REST_URL` 和 `LINK_REVOCATION_UPSTASH_REST_TOKEN`。没有这些变量时，Vercel 上的失效接口会提示撤销存储未配置。
 
-如果在 Vercel 上使用 `YAML_SOURCE_URL`，每次访问限时链接时服务端都会去拉取上游 YAML 链接。远程请求有 10 秒超时，且不会缓存。
+如果在 Vercel 上使用 `YAML_SOURCE_URL`，或使用指向 txt 的 `YAML_FILE_PATH`，每次访问限时链接时服务端都会去拉取上游 YAML 链接。远程请求有 10 秒超时，且不会缓存。
 
-不要在 Vercel 上依赖 `data/subscription.yaml`，因为真实 YAML 不应该提交到 GitHub。
+不要在 Vercel 上依赖 `data/subscription.yaml` 或 `data/iggfeed.txt`，因为真实 YAML 和真实订阅链接不应该提交到 GitHub。
 
 生成 `LINK_SECRET` 的命令：
 
@@ -360,6 +375,7 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 不要提交 `.env.local`。
 - 不要把 `ADMIN_PASSWORD` 和 `LINK_SECRET` 发给使用者。
 - 如果 `YAML_SOURCE_URL` 本身是敏感订阅源，不要把它写进 README、前端代码或公开仓库，只放在 Vercel 环境变量里。
+- 如果把敏感订阅源写在 `data/iggfeed.txt` 这类本地 URL 文件里，也不要提交到 GitHub。
 - 单链接失效只保存 token 的 SHA-256 哈希，不保存原始订阅 URL 或 token。
 - `LINK_SECRET` 改了以后，所有旧链接都会失效。
 - 在 Vercel 上使用单链接失效时，需要 KV/Upstash 这类持久化存储。
@@ -391,7 +407,8 @@ lib/
   link-admin.ts                    # 链接生成和延长的通用规则
   revoked-links.ts                 # token 哈希失效清单存储
   token.ts                         # HMAC token 签名和验证
-  yaml.ts                          # 读取 YAML_CONTENT、YAML_SOURCE_URL 或 YAML_FILE_PATH
+  yaml.ts                          # 读取 YAML_CONTENT、YAML_SOURCE_URL、YAML_FILE_PATH 或本地 URL 文件
 data/
   subscription.example.yaml        # 示例 YAML
+  iggfeed.example.txt              # 本地 URL 文件示例
 ```
