@@ -10,6 +10,10 @@ type RouteContext = {
 
 const subscriptionFilename = "subscription.yaml";
 
+function buildSubscriptionUserinfo(expiresAtSeconds: number): string {
+  return `upload=0; download=0; total=0; expire=${expiresAtSeconds}`;
+}
+
 export async function GET(_request: Request, context: RouteContext) {
   const { token } = await context.params;
   const decodedToken = decodeURIComponent(token);
@@ -44,6 +48,7 @@ export async function GET(_request: Request, context: RouteContext) {
       headers: {
         "content-type": "text/yaml; charset=utf-8",
         "content-disposition": `inline; filename=${subscriptionFilename}`,
+        "subscription-userinfo": buildSubscriptionUserinfo(verification.payload.exp),
         "cache-control": "private, no-store, max-age=0",
         "x-content-type-options": "nosniff"
       }
