@@ -37,22 +37,41 @@ type InvalidateResponse = {
   error?: string;
 };
 
+type LinkStatusResponse = {
+  url?: string;
+  token?: string;
+  label?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  expiresInSeconds?: number;
+  expired?: boolean;
+  invalidated?: boolean;
+  valid?: boolean;
+  status?: "active" | "expired" | "invalidated";
+  error?: string;
+};
+
 type ExpiryUnit = "minutes" | "hours" | "days";
 type ExpiryMode = "duration" | "exact";
-type WorkMode = "create" | "extend" | "invalidate";
+type WorkMode = "create" | "query" | "extend" | "invalidate";
 type MessageKind = "success" | "error";
 
 const storageKey = "yaml-link-history";
+const passwordStorageKey = "yaml-link-admin-password";
 
 export default function Home() {
   const [workMode, setWorkMode] = useState<WorkMode>("create");
   const [password, setPassword] = useState("");
+  const [rememberPassword, setRememberPassword] = useState(false);
+  const [passwordCacheLoaded, setPasswordCacheLoaded] = useState(false);
   const [label, setLabel] = useState("");
   const [expiryMode, setExpiryMode] = useState<ExpiryMode>("duration");
   const [durationValue, setDurationValue] = useState("24");
   const [durationUnit, setDurationUnit] = useState<ExpiryUnit>("hours");
   const [exactTime, setExactTime] = useState("");
 
+  const [queryLinkInput, setQueryLinkInput] = useState("");
+  const [queryResult, setQueryResult] = useState<LinkStatusResponse | null>(null);
   const [extendLinkInput, setExtendLinkInput] = useState("");
   const [extendLabel, setExtendLabel] = useState("");
   const [extendMode, setExtendMode] = useState<ExpiryMode>("duration");
@@ -64,6 +83,8 @@ export default function Home() {
   const [links, setLinks] = useState<GeneratedLink[]>([]);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  const [queryError, setQueryError] = useState("");
+  const [queryStatus, setQueryStatus] = useState("");
   const [extendError, setExtendError] = useState("");
   const [extendStatus, setExtendStatus] = useState("");
   const [invalidateError, setInvalidateError] = useState("");
@@ -71,6 +92,7 @@ export default function Home() {
   const [historyStatus, setHistoryStatus] = useState("");
   const [historyStatusKind, setHistoryStatusKind] = useState<MessageKind>("success");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isQuerying, setIsQuerying] = useState(false);
   const [isExtending, setIsExtending] = useState(false);
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [invalidatingToken, setInvalidatingToken] = useState("");
@@ -92,6 +114,30 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(storageKey, JSON.stringify(links.slice(0, 20)));
   }, [links]);
+
+  useEffect(() => {
+    const savedPassword = window.localStorage.getItem(passwordStorageKey);
+
+    if (savedPassword) {
+      setPassword(savedPassword);
+      setRememberPassword(true);
+    }
+
+    setPasswordCacheLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!passwordCacheLoaded) {
+      return;
+    }
+
+    if (rememberPassword && password) {
+      window.localStorage.setItem(passwordStorageKey, password);
+      return;
+    }
+
+    window.localStorage.removeItem(passwordStorageKey);
+  }, [password, passwordCacheLoaded, rememberPassword]);
 
   const ttlMinutes = useDurationMinutes(durationValue, durationUnit);
   const extendTtlMinutes = useDurationMinutes(extendDurationValue, extendDurationUnit);
@@ -130,6 +176,34 @@ export default function Home() {
       setError(caught instanceof Error ? caught.message : "生成链接失败");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function queryExistingLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setQueryError("");
+    setQueryStatus("");
+    setQueryResult(null);
+    setHistoryStatus("");
+    setHistoryStatusKind("success");
+    setIsQuerying(true);
+
+    try {
+      const data = await postLinkStatus(
+        "/api/link-status",
+        {
+          password,
+          link: queryLinkInput
+        },
+        "查询链接失败"
+      );
+
+      setQueryResult(data);
+      setQueryStatus(getLinkStatusMessage(data));
+    } catch (caught) {
+      setQueryError(caught instanceof Error ? caught.message : "查询链接失败");
+    } finally {
+      setIsQuerying(false);
     }
   }
 
@@ -231,6 +305,52 @@ export default function Home() {
     setHistoryStatus("链接已复制");
   }
 
+  async function copyQueriedLink() {
+    const value = queryResult?.url || queryLinkInput.trim();
+
+    if (!value) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(value);
+    setQueryStatus("链接已复制");
+  }
+
+  function useQueriedLinkForExtend() {
+    const value = queryResult?.url || queryLinkInput.trim();
+
+    if (!value) {
+      return;
+    }
+
+    setExtendLinkInput(value);
+    setExtendLabel(queryResult?.label || "");
+    setExtendError("");
+    setExtendStatus("已填入查询到的链接");
+    setWorkMode("extend");
+  }
+
+  function useQueriedLinkForInvalidate() {
+    const value = queryResult?.url || queryLinkInput.trim();
+
+    if (!value) {
+      return;
+    }
+
+    setInvalidateLinkInput(value);
+    setInvalidateError("");
+    setInvalidateStatus("已填入查询到的链接");
+    setWorkMode("invalidate");
+  }
+
+  function forgetSavedPassword() {
+    window.localStorage.removeItem(passwordStorageKey);
+    setRememberPassword(false);
+    setPassword("");
+    setHistoryStatusKind("success");
+    setHistoryStatus("已清除当前浏览器缓存的管理员密码");
+  }
+
   function markLinkInvalidated(token: string, invalidatedAt: string) {
     setLinks((current) =>
       current.map((link) => (link.token === token ? { ...link, invalidatedAt } : link))
@@ -272,6 +392,15 @@ export default function Home() {
             <button
               type="button"
               role="tab"
+              aria-selected={workMode === "query"}
+              className={workMode === "query" ? "active" : ""}
+              onClick={() => setWorkMode("query")}
+            >
+              查询有效期
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={workMode === "extend"}
               className={workMode === "extend" ? "active" : ""}
               onClick={() => setWorkMode("extend")}
@@ -297,14 +426,12 @@ export default function Home() {
               </div>
 
               <div className="field-grid">
-                <TextField
-                  label="管理员密码"
-                  type="password"
+                <PasswordField
                   value={password}
                   onChange={setPassword}
-                  placeholder="ADMIN_PASSWORD"
-                  autoComplete="current-password"
-                  required
+                  rememberPassword={rememberPassword}
+                  onRememberChange={setRememberPassword}
+                  onForget={forgetSavedPassword}
                 />
                 <TextField
                   label="链接备注"
@@ -334,6 +461,44 @@ export default function Home() {
               {error ? <p className="message error">{error}</p> : null}
               {status ? <p className="message success">{status}</p> : null}
             </form>
+          ) : workMode === "query" ? (
+            <form className="tool-form" onSubmit={queryExistingLink}>
+              <div className="form-title">
+                <h1 id="tool-title">查询链接有效期</h1>
+                <p>校验链接签名、过期时间和手动失效状态。</p>
+              </div>
+
+              <PasswordField
+                value={password}
+                onChange={setPassword}
+                rememberPassword={rememberPassword}
+                onRememberChange={setRememberPassword}
+                onForget={forgetSavedPassword}
+              />
+
+              <TextField
+                label="已有链接或 token"
+                value={queryLinkInput}
+                onChange={setQueryLinkInput}
+                placeholder="https://.../api/subscription/eyJ2Ijox..."
+                required
+              />
+
+              <button className="primary-button" type="submit" disabled={isQuerying}>
+                {isQuerying ? "查询中..." : "查询有效期"}
+              </button>
+
+              {queryError ? <p className="message error">{queryError}</p> : null}
+              {queryStatus ? <p className="message success">{queryStatus}</p> : null}
+              {queryResult ? (
+                <LinkStatusCard
+                  result={queryResult}
+                  onCopy={copyQueriedLink}
+                  onExtend={useQueriedLinkForExtend}
+                  onInvalidate={useQueriedLinkForInvalidate}
+                />
+              ) : null}
+            </form>
           ) : workMode === "extend" ? (
             <form className="tool-form" onSubmit={extendExistingLink}>
               <div className="form-title">
@@ -342,14 +507,12 @@ export default function Home() {
               </div>
 
               <div className="field-grid">
-                <TextField
-                  label="管理员密码"
-                  type="password"
+                <PasswordField
                   value={password}
                   onChange={setPassword}
-                  placeholder="ADMIN_PASSWORD"
-                  autoComplete="current-password"
-                  required
+                  rememberPassword={rememberPassword}
+                  onRememberChange={setRememberPassword}
+                  onForget={forgetSavedPassword}
                 />
                 <TextField
                   label="新备注"
@@ -394,14 +557,12 @@ export default function Home() {
                 <p>失效后，该链接再次访问会返回 410，不再暴露 YAML 内容。</p>
               </div>
 
-              <TextField
-                label="管理员密码"
-                type="password"
+              <PasswordField
                 value={password}
                 onChange={setPassword}
-                placeholder="ADMIN_PASSWORD"
-                autoComplete="current-password"
-                required
+                rememberPassword={rememberPassword}
+                onRememberChange={setRememberPassword}
+                onForget={forgetSavedPassword}
               />
 
               <TextField
@@ -542,6 +703,109 @@ function TextField({
   );
 }
 
+function PasswordField({
+  value,
+  onChange,
+  rememberPassword,
+  onRememberChange,
+  onForget
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  rememberPassword: boolean;
+  onRememberChange: (value: boolean) => void;
+  onForget: () => void;
+}) {
+  return (
+    <div className="password-field">
+      <TextField
+        label="管理员密码"
+        type="password"
+        value={value}
+        onChange={onChange}
+        placeholder="ADMIN_PASSWORD"
+        autoComplete="current-password"
+        required
+      />
+      <div className="password-cache-row">
+        <label>
+          <input
+            type="checkbox"
+            checked={rememberPassword}
+            onChange={(event) => onRememberChange(event.target.checked)}
+          />
+          <span>记住密码</span>
+        </label>
+        {rememberPassword ? (
+          <button type="button" onClick={onForget}>
+            清除缓存
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function LinkStatusCard({
+  result,
+  onCopy,
+  onExtend,
+  onInvalidate
+}: {
+  result: LinkStatusResponse;
+  onCopy: () => void;
+  onExtend: () => void;
+  onInvalidate: () => void;
+}) {
+  const status = getLinkStatus(result);
+  const canExtend = status !== "invalidated";
+  const canInvalidate = status === "active";
+
+  return (
+    <article className="status-card" aria-label="链接有效期查询结果">
+      <div className="status-card-header">
+        <div>
+          <span className={`status-pill ${status}`}>{getLinkStatusLabel(result)}</span>
+          <strong>{result.label || "未命名链接"}</strong>
+        </div>
+      </div>
+
+      <div className="status-grid">
+        <StatusMetric label="过期时间" value={formatDateTime(result.expiresAt)} />
+        <StatusMetric label="剩余时间" value={getRemainingText(result)} />
+        <StatusMetric label="创建时间" value={formatDateTime(result.issuedAt)} />
+      </div>
+
+      {result.url ? <code>{result.url}</code> : null}
+
+      <div className="status-actions">
+        <button className="secondary-button compact" type="button" onClick={onCopy}>
+          复制
+        </button>
+        {canExtend ? (
+          <button className="secondary-button compact" type="button" onClick={onExtend}>
+            去延长
+          </button>
+        ) : null}
+        {canInvalidate ? (
+          <button className="secondary-button compact danger-button" type="button" onClick={onInvalidate}>
+            去失效
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function StatusMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function ExpiryControls({
   mode,
   setMode,
@@ -665,6 +929,27 @@ async function postLink(endpoint: string, payload: object, fallbackMessage: stri
   return data;
 }
 
+async function postLinkStatus(
+  endpoint: string,
+  payload: object,
+  fallbackMessage: string
+): Promise<LinkStatusResponse> {
+  const data = await postJson<LinkStatusResponse>(endpoint, payload, fallbackMessage);
+
+  if (
+    !data.url ||
+    !data.token ||
+    !data.issuedAt ||
+    !data.expiresAt ||
+    typeof data.expiresInSeconds !== "number" ||
+    !data.status
+  ) {
+    throw new Error("接口返回的数据不完整");
+  }
+
+  return data;
+}
+
 async function postInvalidateLink(
   endpoint: string,
   payload: object,
@@ -689,6 +974,95 @@ function getInvalidateStatus(data: InvalidateResponse): string {
   }
 
   return "链接已失效";
+}
+
+function getLinkStatus(data: LinkStatusResponse): "active" | "expired" | "invalidated" {
+  if (data.status) {
+    return data.status;
+  }
+
+  if (data.invalidated) {
+    return "invalidated";
+  }
+
+  return data.expired ? "expired" : "active";
+}
+
+function getLinkStatusLabel(data: LinkStatusResponse): string {
+  const status = getLinkStatus(data);
+
+  if (status === "invalidated") {
+    return "已失效";
+  }
+
+  if (status === "expired") {
+    return "已过期";
+  }
+
+  return "有效";
+}
+
+function getLinkStatusMessage(data: LinkStatusResponse): string {
+  const status = getLinkStatus(data);
+
+  if (status === "invalidated") {
+    return "链接已手动失效，不能继续访问";
+  }
+
+  if (status === "expired") {
+    return `链接已过期 ${formatDuration(Math.abs(data.expiresInSeconds || 0))}，可延长后生成替代链接`;
+  }
+
+  return `链接有效，剩余 ${formatDuration(data.expiresInSeconds || 0)}`;
+}
+
+function getRemainingText(data: LinkStatusResponse): string {
+  const status = getLinkStatus(data);
+
+  if (status === "invalidated") {
+    return "已手动失效";
+  }
+
+  if (status === "expired") {
+    return `已过期 ${formatDuration(Math.abs(data.expiresInSeconds || 0))}`;
+  }
+
+  return formatDuration(data.expiresInSeconds || 0);
+}
+
+function formatDateTime(value?: string): string {
+  if (!value) {
+    return "-";
+  }
+
+  return new Date(value).toLocaleString();
+}
+
+function formatDuration(totalSeconds: number): string {
+  const roundedSeconds = Math.max(0, Math.floor(totalSeconds));
+
+  if (roundedSeconds < 60) {
+    return "不足 1 分钟";
+  }
+
+  const days = Math.floor(roundedSeconds / 86400);
+  const hours = Math.floor((roundedSeconds % 86400) / 3600);
+  const minutes = Math.floor((roundedSeconds % 3600) / 60);
+  const parts: string[] = [];
+
+  if (days > 0) {
+    parts.push(`${days} 天`);
+  }
+
+  if (hours > 0) {
+    parts.push(`${hours} 小时`);
+  }
+
+  if (minutes > 0 && parts.length < 2) {
+    parts.push(`${minutes} 分钟`);
+  }
+
+  return parts.slice(0, 2).join(" ");
 }
 
 function toGeneratedLink(

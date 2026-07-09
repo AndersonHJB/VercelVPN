@@ -5,12 +5,14 @@
 ## 功能
 
 - 为同一个 YAML 文件生成多个不同有效期的链接。
+- 查询某个链接的有效期、剩余时间和当前状态。
 - 对某个已有链接增加有效期。
 - 已过期但签名有效的链接，也可以由管理员延长并生成新的替代链接。
 - 对某个已有链接单独设置失效，访问时返回 `410 Gone`。
 - 链接过期后返回 `410 Gone`，不再暴露 YAML 内容。
 - 链接 token 使用 `LINK_SECRET` 做 HMAC 签名；单链接失效只存 token 哈希。
-- 管理页需要 `ADMIN_PASSWORD` 才能生成链接。
+- 管理页需要 `ADMIN_PASSWORD` 才能生成、查询、延长或失效链接。
+- 管理页可以把管理员密码记住在当前浏览器的本地缓存里。
 - YAML 来源支持环境变量内容、本地文件、远程 YAML 链接。
 - YAML 不放在 `public/`，避免绕过服务端校验。
 
@@ -31,6 +33,8 @@
 - 指定新的过期时间时，新时间必须晚于旧过期时间或当前时间。
 
 失效已有链接时，管理页会提交旧链接到 `/api/invalidate-link`。服务端验证管理员密码和 token 签名后，把 token 的 SHA-256 哈希写入失效清单。原 URL 不会改变；之后访问同一个 URL 会返回 `This link has been invalidated.` 和 HTTP `410`。
+
+查询已有链接时，管理页会提交旧链接到 `/api/link-status`。服务端会验证管理员密码、token 签名、过期时间和失效清单，并返回 `active`、`expired` 或 `invalidated` 状态。查询结果里可以直接把链接带入延长或失效操作。
 
 本地开发默认使用 `data/revoked-links.json` 保存失效清单。Vercel 等无状态部署需要配置 KV/Upstash 这类持久化存储，否则单链接失效无法跨实例可靠生效。
 
@@ -284,6 +288,22 @@ https://your-project.vercel.app/api/subscription/eyJ2Ijox...
 - 已失效：返回 `This link has been invalidated.` 和 HTTP `410`。
 - token 被改动：返回 `Invalid link.` 和 HTTP `403` 或 `400`。
 
+### 查询链接有效期
+
+1. 打开你的 Vercel 域名。
+2. 找到 `查询有效期` 区域。
+3. 输入 `ADMIN_PASSWORD`。
+4. 粘贴完整旧链接，或只粘贴 token。
+5. 点击 `查询有效期`。
+
+查询结果会显示链接状态、过期时间、剩余时间和创建时间：
+
+- `有效`：可以直接复制、带入延长操作或带入失效操作。
+- `已过期`：可以带入延长操作，生成新的替代链接。
+- `已失效`：不能继续访问，也不能继续延长。
+
+如果希望当前浏览器记住管理员密码，勾选 `记住密码`。密码只保存在当前浏览器的本地缓存中，点击 `清除缓存` 可以删除。
+
 ### 给不同用户设置不同有效期
 
 示例：
@@ -361,6 +381,7 @@ npm audit --omit=dev
 app/
   api/
     links/route.ts                 # 生成签名链接
+    link-status/route.ts           # 查询链接有效期和状态
     extend-link/route.ts           # 延长已有链接并生成替代链接
     invalidate-link/route.ts       # 将某个链接写入失效清单
     subscription/[token]/route.ts  # 校验 token 并返回 YAML
