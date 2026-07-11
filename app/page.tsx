@@ -58,6 +58,7 @@ type MessageKind = "success" | "error";
 
 const storageKey = "yaml-link-history";
 const passwordStorageKey = "yaml-link-admin-password";
+const historyPageSize = 20;
 
 export default function Home() {
   const [workMode, setWorkMode] = useState<WorkMode>("create");
@@ -81,6 +82,9 @@ export default function Home() {
   const [invalidateLinkInput, setInvalidateLinkInput] = useState("");
 
   const [links, setLinks] = useState<GeneratedLink[]>([]);
+  const [historyCacheLoaded, setHistoryCacheLoaded] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyPage, setHistoryPage] = useState(1);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [queryError, setQueryError] = useState("");
@@ -98,22 +102,75 @@ export default function Home() {
   const [invalidatingToken, setInvalidatingToken] = useState("");
 
   useEffect(() => {
-    const saved = window.localStorage.getItem(storageKey);
-
-    if (!saved) {
-      return;
-    }
-
     try {
-      setLinks(JSON.parse(saved) as GeneratedLink[]);
+      const saved = window.localStorage.getItem(storageKey);
+
+      if (saved) {
+        const parsed: unknown = JSON.parse(saved);
+
+        if (!Array.isArray(parsed)) {
+          throw new Error("历史缓存格式无效");
+        }
+
+        setLinks(mergeGeneratedLinks([], parsed.filter(isGeneratedLink)));
+      }
     } catch {
-      window.localStorage.removeItem(storageKey);
+      try {
+        window.localStorage.removeItem(storageKey);
+      } catch {
+        // The persistence effect below reports unavailable browser storage.
+      }
+    } finally {
+      setHistoryCacheLoaded(true);
     }
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(links.slice(0, 20)));
-  }, [links]);
+    if (!historyCacheLoaded) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(links));
+    } catch {
+      setHistoryStatusKind("error");
+      setHistoryStatus("历史缓存写入失败，请检查浏览器存储空间");
+    }
+  }, [historyCacheLoaded, links]);
+
+  useEffect(() => {
+    function syncHistoryAcrossTabs(event: StorageEvent) {
+      if (event.key !== storageKey || event.storageArea !== window.localStorage) {
+        return;
+      }
+
+      try {
+        const parsed: unknown = event.newValue ? JSON.parse(event.newValue) : [];
+
+        if (!Array.isArray(parsed)) {
+          return;
+        }
+
+        if (parsed.length === 0) {
+          setLinks([]);
+          setHistorySearch("");
+          setHistoryPage(1);
+          return;
+        }
+
+        const storedLinks = parsed.filter(isGeneratedLink);
+
+        if (storedLinks.length > 0) {
+          setLinks((current) => mergeGeneratedLinks(current, storedLinks));
+        }
+      } catch {
+        // Ignore malformed writes from another tab and preserve the current history.
+      }
+    }
+
+    window.addEventListener("storage", syncHistoryAcrossTabs);
+    return () => window.removeEventListener("storage", syncHistoryAcrossTabs);
+  }, []);
 
   useEffect(() => {
     const savedPassword = window.localStorage.getItem(passwordStorageKey);
@@ -141,6 +198,29 @@ export default function Home() {
 
   const ttlMinutes = useDurationMinutes(durationValue, durationUnit);
   const extendTtlMinutes = useDurationMinutes(extendDurationValue, extendDurationUnit);
+  const filteredLinks = useMemo(() => {
+    const search = historySearch.trim().toLowerCase();
+
+    if (!search) {
+      return links;
+    }
+
+    return links.filter((link) =>
+      [link.label, link.url, link.token].some(
+        (value) => typeof value === "string" && value.toLowerCase().includes(search)
+      )
+    );
+  }, [historySearch, links]);
+  const historyPageCount = Math.max(1, Math.ceil(filteredLinks.length / historyPageSize));
+  const visibleLinks = useMemo(() => {
+    const start = (historyPage - 1) * historyPageSize;
+    return filteredLinks.slice(start, start + historyPageSize);
+  }, [filteredLinks, historyPage]);
+  const showHistoryControls = links.length > historyPageSize;
+
+  useEffect(() => {
+    setHistoryPage((current) => Math.min(current, historyPageCount));
+  }, [historyPageCount]);
 
   async function createLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -170,7 +250,9 @@ export default function Home() {
         source: "created"
       });
 
-      setLinks((current) => [nextLink, ...current].slice(0, 20));
+      setLinks((current) => [nextLink, ...current]);
+      setHistorySearch("");
+      setHistoryPage(1);
       setStatus("链接已生成，已加入右侧列表");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "生成链接失败");
@@ -237,7 +319,9 @@ export default function Home() {
         source: "extended"
       });
 
-      setLinks((current) => [nextLink, ...current].slice(0, 20));
+      setLinks((current) => [nextLink, ...current]);
+      setHistorySearch("");
+      setHistoryPage(1);
       setExtendStatus(data.wasExpired ? "过期链接已延长，已生成新的替代链接" : "链接已延长，已生成新的替代链接");
     } catch (caught) {
       setExtendError(caught instanceof Error ? caught.message : "延长链接失败");
@@ -587,75 +671,129 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <h2 id="history-title">最近生成</h2>
-              <p>仅保存在当前浏览器，最多显示 20 条。</p>
+              <p>永久保存在当前浏览器，共 {links.length} 条。</p>
             </div>
             <div className="history-actions">
               {historyStatus ? <span className={historyStatusKind === "error" ? "error" : undefined}>{historyStatus}</span> : null}
               {links.length > 0 ? (
-                <button className="secondary-button" type="button" onClick={() => setLinks([])}>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => {
+                    setLinks([]);
+                    setHistorySearch("");
+                    setHistoryPage(1);
+                  }}
+                >
                   清空
                 </button>
               ) : null}
             </div>
           </div>
 
+          {showHistoryControls ? (
+            <div className="history-toolbar">
+              <input
+                aria-label="搜索历史链接"
+                type="search"
+                value={historySearch}
+                onChange={(event) => {
+                  setHistorySearch(event.target.value);
+                  setHistoryPage(1);
+                }}
+                placeholder="搜索备注、链接或 token"
+              />
+              <span>{historySearch.trim() ? `找到 ${filteredLinks.length} 条` : `每页 ${historyPageSize} 条`}</span>
+            </div>
+          ) : null}
+
           {links.length === 0 ? (
             <div className="empty-state">
               <strong>还没有链接</strong>
               <span>生成或延长后会显示在这里。</span>
             </div>
-          ) : (
-            <div className="link-table" role="table" aria-label="最近生成的链接">
-              <div className="link-table-head" role="row">
-                <span>备注</span>
-                <span>过期时间</span>
-                <span>链接</span>
-                <span>操作</span>
-              </div>
-              <div className="link-table-body">
-                {links.map((link) => (
-                  <article className={link.invalidatedAt ? "link-row invalidated" : "link-row"} role="row" key={link.token}>
-                    <div className="link-meta" role="cell">
-                      <div className="link-title-row">
-                        <strong>{link.label || "未命名链接"}</strong>
-                        {link.source === "extended" ? <b>已延长</b> : null}
-                        {link.invalidatedAt ? <b className="danger">已失效</b> : null}
-                      </div>
-                      {link.previousExpiresAt ? (
-                        <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small>
-                      ) : null}
-                      {link.invalidatedAt ? (
-                        <small>失效：{new Date(link.invalidatedAt).toLocaleString()}</small>
-                      ) : null}
-                    </div>
-                    <time role="cell" dateTime={link.expiresAt}>
-                      {new Date(link.expiresAt).toLocaleString()}
-                    </time>
-                    <code role="cell">{link.url}</code>
-                    <div className="row-actions" role="cell">
-                      <button className="secondary-button compact" type="button" onClick={() => copyLink(link.url)}>
-                        复制
-                      </button>
-                      <button
-                        className="secondary-button compact danger-button"
-                        type="button"
-                        disabled={Boolean(link.invalidatedAt) || invalidatingToken === link.token}
-                        onClick={() => invalidateGeneratedLink(link)}
-                      >
-                        {link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}
-                      </button>
-                      <a className="icon-link" href={link.url} target="_blank" rel="noreferrer" aria-label="打开链接">
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M14 5h5v5" />
-                          <path d="m10 14 9-9" />
-                          <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
-                        </svg>
-                      </a>
-                    </div>
-                  </article>
-                ))}
-              </div>
+          ) : filteredLinks.length === 0 ? (
+            <div className="empty-state">
+              <strong>没有匹配的链接</strong>
+              <span>请尝试搜索其它备注、链接或 token。</span>
             </div>
+          ) : (
+            <>
+              <div className="link-table" role="table" aria-label="最近生成的链接">
+                <div className="link-table-head" role="row">
+                  <span>备注</span>
+                  <span>过期时间</span>
+                  <span>链接</span>
+                  <span>操作</span>
+                </div>
+                <div className="link-table-body">
+                  {visibleLinks.map((link) => (
+                    <article className={link.invalidatedAt ? "link-row invalidated" : "link-row"} role="row" key={link.token}>
+                      <div className="link-meta" role="cell">
+                        <div className="link-title-row">
+                          <strong>{link.label || "未命名链接"}</strong>
+                          {link.source === "extended" ? <b>已延长</b> : null}
+                          {link.invalidatedAt ? <b className="danger">已失效</b> : null}
+                        </div>
+                        {link.previousExpiresAt ? (
+                          <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small>
+                        ) : null}
+                        {link.invalidatedAt ? (
+                          <small>失效：{new Date(link.invalidatedAt).toLocaleString()}</small>
+                        ) : null}
+                      </div>
+                      <time role="cell" dateTime={link.expiresAt}>
+                        {new Date(link.expiresAt).toLocaleString()}
+                      </time>
+                      <code role="cell">{link.url}</code>
+                      <div className="row-actions" role="cell">
+                        <button className="secondary-button compact" type="button" onClick={() => copyLink(link.url)}>
+                          复制
+                        </button>
+                        <button
+                          className="secondary-button compact danger-button"
+                          type="button"
+                          disabled={Boolean(link.invalidatedAt) || invalidatingToken === link.token}
+                          onClick={() => invalidateGeneratedLink(link)}
+                        >
+                          {link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}
+                        </button>
+                        <a className="icon-link" href={link.url} target="_blank" rel="noreferrer" aria-label="打开链接">
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M14 5h5v5" />
+                            <path d="m10 14 9-9" />
+                            <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
+                          </svg>
+                        </a>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+              {historyPageCount > 1 ? (
+                <nav className="history-pagination" aria-label="历史链接分页">
+                  <button
+                    className="secondary-button compact"
+                    type="button"
+                    disabled={historyPage === 1}
+                    onClick={() => setHistoryPage((current) => Math.max(1, current - 1))}
+                  >
+                    上一页
+                  </button>
+                  <span aria-live="polite">
+                    第 {historyPage} / {historyPageCount} 页
+                  </span>
+                  <button
+                    className="secondary-button compact"
+                    type="button"
+                    disabled={historyPage === historyPageCount}
+                    onClick={() => setHistoryPage((current) => Math.min(historyPageCount, current + 1))}
+                  >
+                    下一页
+                  </button>
+                </nav>
+              ) : null}
+            </>
           )}
         </section>
       </section>
@@ -1083,4 +1221,74 @@ function toGeneratedLink(
     wasExpired: data.wasExpired,
     source: options.source
   };
+}
+
+function isGeneratedLink(value: unknown): value is GeneratedLink {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const link = value as Partial<GeneratedLink>;
+
+  return (
+    typeof link.url === "string" &&
+    link.url.length > 0 &&
+    typeof link.token === "string" &&
+    link.token.length > 0 &&
+    typeof link.expiresAt === "string" &&
+    typeof link.expiresInSeconds === "number" &&
+    Number.isFinite(link.expiresInSeconds) &&
+    typeof link.createdAt === "string" &&
+    (link.label === undefined || typeof link.label === "string") &&
+    (link.invalidatedAt === undefined || typeof link.invalidatedAt === "string") &&
+    (link.previousExpiresAt === undefined || typeof link.previousExpiresAt === "string") &&
+    (link.wasExpired === undefined || typeof link.wasExpired === "boolean") &&
+    (link.source === undefined || link.source === "created" || link.source === "extended")
+  );
+}
+
+function mergeGeneratedLinks(current: GeneratedLink[], incoming: GeneratedLink[]): GeneratedLink[] {
+  const linksByToken = new Map<string, GeneratedLink>();
+
+  for (const link of [...current, ...incoming]) {
+    const existing = linksByToken.get(link.token);
+
+    if (!existing) {
+      linksByToken.set(link.token, link);
+      continue;
+    }
+
+    if (!existing.invalidatedAt && link.invalidatedAt) {
+      linksByToken.set(link.token, { ...existing, invalidatedAt: link.invalidatedAt });
+    }
+  }
+
+  const merged = Array.from(linksByToken.values()).sort((left, right) => {
+    const createdAtOrder = right.createdAt.localeCompare(left.createdAt);
+    return createdAtOrder || right.token.localeCompare(left.token);
+  });
+
+  return areGeneratedLinkListsEqual(merged, current) ? current : merged;
+}
+
+function areGeneratedLinkListsEqual(left: GeneratedLink[], right: GeneratedLink[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((link, index) => {
+      const other = right[index];
+
+      return (
+        link.url === other.url &&
+        link.token === other.token &&
+        link.expiresAt === other.expiresAt &&
+        link.expiresInSeconds === other.expiresInSeconds &&
+        link.label === other.label &&
+        link.createdAt === other.createdAt &&
+        link.invalidatedAt === other.invalidatedAt &&
+        link.previousExpiresAt === other.previousExpiresAt &&
+        link.wasExpired === other.wasExpired &&
+        link.source === other.source
+      );
+    })
+  );
 }

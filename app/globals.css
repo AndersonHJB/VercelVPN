@@ -531,6 +531,47 @@ h2 {
   color: var(--danger);
 }
 
+.history-toolbar {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fbfcfe;
+  padding: 10px 20px;
+}
+
+.history-toolbar input {
+  width: min(380px, 100%);
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 0 12px;
+  outline: none;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.history-toolbar input::placeholder {
+  color: #8b94a3;
+}
+
+.history-toolbar input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+.history-toolbar span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
 .empty-state {
   min-height: 280px;
   display: grid;
@@ -679,6 +720,24 @@ code {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
+}
+
+.history-pagination {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  background: #fbfcfe;
+  padding: 10px 20px;
+}
+
+.history-pagination span {
+  color: var(--muted-strong);
+  font-size: 0.8rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .app-footer {
@@ -844,6 +903,23 @@ code {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
     justify-content: stretch;
+  }
+
+  .history-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px 16px;
+  }
+
+  .history-toolbar input {
+    width: 100%;
+    height: 48px;
+    font-size: 16px;
+  }
+
+  .history-pagination {
+    justify-content: space-between;
+    padding: 10px 12px;
   }
 
   .link-table-head {
