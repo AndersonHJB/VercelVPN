@@ -517,6 +517,8 @@ h2 {
 .history-actions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -529,6 +531,31 @@ h2 {
 
 .history-actions span.error {
   color: var(--danger);
+}
+
+.history-export-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-export-select {
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--accent-strong);
+  padding: 0 10px;
+  outline: none;
+  font-weight: 850;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.history-export-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus);
 }
 
 .history-toolbar {
@@ -917,6 +944,12 @@ code {
     font-size: 16px;
   }
 
+  .history-export-select {
+    min-height: 48px;
+    height: auto;
+    font-size: 16px;
+  }
+
   .history-pagination {
     justify-content: space-between;
     padding: 10px 12px;
@@ -1036,6 +1069,7 @@ code {
 
   .history-actions {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 8px;
   }

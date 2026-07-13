@@ -55,6 +55,20 @@ type ExpiryUnit = "minutes" | "hours" | "days";
 type ExpiryMode = "duration" | "exact";
 type WorkMode = "create" | "query" | "extend" | "invalidate";
 type MessageKind = "success" | "error";
+type HistoryExportFormat = "csv" | "json" | "txt";
+
+type HistoryExportRecord = {
+  label?: string;
+  url: string;
+  token: string;
+  createdAt: string;
+  expiresAt: string;
+  expiresInSeconds: number;
+  invalidatedAt?: string;
+  previousExpiresAt?: string;
+  wasExpired?: boolean;
+  source?: "created" | "extended";
+};
 
 const storageKey = "yaml-link-history";
 const passwordStorageKey = "yaml-link-admin-password";
@@ -85,6 +99,7 @@ export default function Home() {
   const [historyCacheLoaded, setHistoryCacheLoaded] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [historyPage, setHistoryPage] = useState(1);
+  const [historyExportFormat, setHistoryExportFormat] = useState<HistoryExportFormat>("csv");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [queryError, setQueryError] = useState("");
@@ -400,6 +415,32 @@ export default function Home() {
     setQueryStatus("链接已复制");
   }
 
+  function downloadHistory() {
+    try {
+      const exportedAt = new Date();
+      const file = createHistoryExport(links, historyExportFormat, exportedAt);
+      const objectUrl = URL.createObjectURL(new Blob([file.content], { type: file.mimeType }));
+      const anchor = document.createElement("a");
+
+      try {
+        anchor.href = objectUrl;
+        anchor.download = file.fileName;
+        anchor.style.display = "none";
+        document.body.appendChild(anchor);
+        anchor.click();
+      } finally {
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+
+      setHistoryStatusKind("success");
+      setHistoryStatus(`已开始下载 ${links.length} 条（${historyExportFormat.toUpperCase()}）`);
+    } catch {
+      setHistoryStatusKind("error");
+      setHistoryStatus("导出失败，请重试");
+    }
+  }
+
   function useQueriedLinkForExtend() {
     const value = queryResult?.url || queryLinkInput.trim();
 
@@ -676,17 +717,39 @@ export default function Home() {
             <div className="history-actions">
               {historyStatus ? <span className={historyStatusKind === "error" ? "error" : undefined}>{historyStatus}</span> : null}
               {links.length > 0 ? (
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={() => {
-                    setLinks([]);
-                    setHistorySearch("");
-                    setHistoryPage(1);
-                  }}
-                >
-                  清空
-                </button>
+                <>
+                  <div className="history-export-controls">
+                    <select
+                      className="history-export-select"
+                      aria-label="历史记录导出格式"
+                      value={historyExportFormat}
+                      onChange={(event) => setHistoryExportFormat(event.target.value as HistoryExportFormat)}
+                    >
+                      <option value="csv">CSV</option>
+                      <option value="json">JSON</option>
+                      <option value="txt">TXT</option>
+                    </select>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      title="导出文件包含订阅链接，请妥善保管"
+                      onClick={downloadHistory}
+                    >
+                      导出全部
+                    </button>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => {
+                      setLinks([]);
+                      setHistorySearch("");
+                      setHistoryPage(1);
+                    }}
+                  >
+                    清空
+                  </button>
+                </>
               ) : null}
             </div>
           </div>
@@ -1201,6 +1264,123 @@ function formatDuration(totalSeconds: number): string {
   }
 
   return parts.slice(0, 2).join(" ");
+}
+
+function createHistoryExport(
+  links: GeneratedLink[],
+  format: HistoryExportFormat,
+  exportedAt: Date
+): { content: string; fileName: string; mimeType: string } {
+  const records = links.map(toHistoryExportRecord);
+  const timestamp = exportedAt.toISOString().replace(/\.\d{3}Z$/, "Z").replaceAll(":", "-");
+  const fileName = `yaml-link-history-${timestamp}.${format}`;
+
+  if (format === "json") {
+    return {
+      content: `${JSON.stringify(records, null, 2)}\n`,
+      fileName,
+      mimeType: "application/json;charset=utf-8"
+    };
+  }
+
+  if (format === "txt") {
+    return {
+      content: createHistoryText(records, exportedAt),
+      fileName,
+      mimeType: "text/plain;charset=utf-8"
+    };
+  }
+
+  return {
+    content: createHistoryCsv(records),
+    fileName,
+    mimeType: "text/csv;charset=utf-8"
+  };
+}
+
+function toHistoryExportRecord(link: GeneratedLink): HistoryExportRecord {
+  return {
+    label: link.label,
+    url: link.url,
+    token: link.token,
+    createdAt: link.createdAt,
+    expiresAt: link.expiresAt,
+    expiresInSeconds: link.expiresInSeconds,
+    invalidatedAt: link.invalidatedAt,
+    previousExpiresAt: link.previousExpiresAt,
+    wasExpired: link.wasExpired,
+    source: link.source
+  };
+}
+
+function createHistoryCsv(records: HistoryExportRecord[]): string {
+  const header = [
+    "label",
+    "url",
+    "token",
+    "createdAt",
+    "expiresAt",
+    "expiresInSeconds",
+    "invalidatedAt",
+    "previousExpiresAt",
+    "wasExpired",
+    "source"
+  ];
+  const rows = records.map((record) =>
+    [
+      record.label,
+      record.url,
+      record.token,
+      record.createdAt,
+      record.expiresAt,
+      record.expiresInSeconds,
+      record.invalidatedAt,
+      record.previousExpiresAt,
+      record.wasExpired,
+      record.source
+    ]
+      .map(escapeCsvValue)
+      .join(",")
+  );
+
+  return `\uFEFF${[header.map(escapeCsvValue).join(","), ...rows].join("\r\n")}\r\n`;
+}
+
+function escapeCsvValue(value: string | number | boolean | undefined): string {
+  let text = value === undefined ? "" : String(value);
+
+  if (typeof value === "string" && (/^\s*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text))) {
+    text = `'${text}`;
+  }
+
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function createHistoryText(records: HistoryExportRecord[], exportedAt: Date): string {
+  const recordBlocks = records.map((record, index) =>
+    [
+      `记录 ${index + 1}`,
+      `备注：${record.label ?? ""}`,
+      `链接：${record.url}`,
+      `Token：${record.token}`,
+      `创建时间：${record.createdAt}`,
+      `过期时间：${record.expiresAt}`,
+      `生成时剩余秒数：${record.expiresInSeconds}`,
+      `失效时间：${record.invalidatedAt ?? ""}`,
+      `原过期时间：${record.previousExpiresAt ?? ""}`,
+      `延长前是否过期：${record.wasExpired === undefined ? "" : record.wasExpired ? "是" : "否"}`,
+      `来源：${record.source ?? ""}`
+    ].join("\r\n")
+  );
+
+  return [
+    "\uFEFFYAML Link Manager 历史记录",
+    `导出时间：${exportedAt.toISOString()}`,
+    `记录数量：${records.length}`,
+    "",
+    recordBlocks.join("\r\n\r\n---\r\n\r\n"),
+    ""
+  ].join("\r\n");
 }
 
 function toGeneratedLink(
