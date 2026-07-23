@@ -1,2 +1,2 @@
 # Copy this file to data/iggfeed.txt, then replace the URL with your upstream YAML URL.
-https://feed.iggv5.com/c/2122d787-c826-40ad-a14a-dd8ade9e3bcc/platform/clash/iGG-iGuge
+https://feed.iggv5.com/c/cd8bc555-d2a2-4088-8601-ebf66967c13d/platform/clash/iGG-iGuge
