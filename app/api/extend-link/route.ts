@@ -9,8 +9,9 @@ import {
   parseExtendedExpiry,
   sanitizeLabel
 } from "@/lib/link-admin";
-import { isTokenRevoked } from "@/lib/revoked-links";
-import { createSignedToken, requireLinkSecret, type LinkPayload, verifySignedToken } from "@/lib/token";
+import { createSignedToken, requireLinkSecret, type LinkPayload } from "@/lib/token";
+import { hasGitHubStorage, StorageError } from "@/lib/github-store";
+import { extendStoredSubscription, originalSubscriptionUrl, resolveSubscription } from "@/lib/subscriptions";
 
 type ExtendLinkBody = {
   password?: unknown;
@@ -19,7 +20,11 @@ type ExtendLinkBody = {
   label?: unknown;
   ttlMinutes?: unknown;
   expiresAt?: unknown;
+  operationId?: unknown;
 };
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   let body: ExtendLinkBody;
@@ -31,23 +36,27 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("Request body must be an object.");
     if (!isAdminPasswordValid(body.password)) {
       return NextResponse.json({ error: "Admin password is incorrect." }, { status: 401 });
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const existingToken = extractTokenFromLinkInput(body.link ?? body.token);
-    const secret = requireLinkSecret();
-    const verification = verifySignedToken(existingToken, secret, nowSeconds, {
-      allowExpired: true
-    });
+    const verification = await resolveSubscription(existingToken, nowSeconds);
 
     if (!verification.ok) {
       return NextResponse.json({ error: verification.message }, { status: verification.status });
     }
 
-    if (await isTokenRevoked(existingToken, nowSeconds)) {
+    if (verification.invalidated) {
       return NextResponse.json({ error: "This link has been invalidated." }, { status: 410 });
+    }
+
+    if (hasGitHubStorage()) {
+      const url = originalSubscriptionUrl(body.link, request, existingToken);
+      const record = await extendStoredSubscription(existingToken, verification.payload, url, body, nowSeconds);
+      return NextResponse.json({ ...record, unchangedUrl: true });
     }
 
     const previousExpiresAtSeconds = verification.payload.exp;
@@ -66,7 +75,7 @@ export async function POST(request: Request) {
       delete payload.label;
     }
 
-    const token = createSignedToken(payload, secret);
+    const token = createSignedToken(payload, requireLinkSecret());
     const url = buildSubscriptionUrl(request, token);
 
     return NextResponse.json({
@@ -79,12 +88,12 @@ export async function POST(request: Request) {
       wasExpired: verification.expired
     });
   } catch (error) {
-    if (error instanceof BadRequestError) {
+    if (error instanceof BadRequestError || error instanceof URIError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
     const message = error instanceof Error ? error.message : "Failed to extend link.";
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: error instanceof StorageError ? error.status : 500 });
   }
 }

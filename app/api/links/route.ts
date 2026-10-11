@@ -10,6 +10,8 @@ import {
   sanitizeLabel
 } from "@/lib/link-admin";
 import { createSignedToken, requireLinkSecret, type LinkPayload } from "@/lib/token";
+import { saveCreatedSubscription } from "@/lib/subscriptions";
+import { StorageError } from "@/lib/github-store";
 
 type CreateLinkBody = {
   password?: unknown;
@@ -17,6 +19,9 @@ type CreateLinkBody = {
   ttlMinutes?: unknown;
   expiresAt?: unknown;
 };
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   let body: CreateLinkBody;
@@ -28,6 +33,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("Request body must be an object.");
     if (!isAdminPasswordValid(body.password)) {
       return NextResponse.json({ error: "Admin password is incorrect." }, { status: 401 });
     }
@@ -50,6 +56,7 @@ export async function POST(request: Request) {
 
     const token = createSignedToken(payload, requireLinkSecret());
     const url = buildSubscriptionUrl(request, token);
+    await saveCreatedSubscription(token, payload, url);
 
     return NextResponse.json({
       url,
@@ -65,6 +72,6 @@ export async function POST(request: Request) {
 
     const message = error instanceof Error ? error.message : "Failed to create link.";
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: error instanceof StorageError ? error.status : 500 });
   }
 }

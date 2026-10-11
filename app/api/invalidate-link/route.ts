@@ -2,14 +2,18 @@ import { NextResponse } from "next/server";
 
 import { isAdminPasswordValid } from "@/lib/auth";
 import { BadRequestError, extractTokenFromLinkInput } from "@/lib/link-admin";
-import { isTokenRevoked, revokeToken } from "@/lib/revoked-links";
-import { requireLinkSecret, verifySignedToken } from "@/lib/token";
+import { revokeToken } from "@/lib/revoked-links";
+import { hasGitHubStorage, StorageError } from "@/lib/github-store";
+import { invalidateStoredSubscription, originalSubscriptionUrl, resolveSubscription } from "@/lib/subscriptions";
 
 type InvalidateLinkBody = {
   password?: unknown;
   link?: unknown;
   token?: unknown;
 };
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   let body: InvalidateLinkBody;
@@ -21,21 +25,26 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("Request body must be an object.");
     if (!isAdminPasswordValid(body.password)) {
       return NextResponse.json({ error: "Admin password is incorrect." }, { status: 401 });
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const token = extractTokenFromLinkInput(body.link ?? body.token);
-    const verification = verifySignedToken(token, requireLinkSecret(), nowSeconds, {
-      allowExpired: true
-    });
+    const verification = await resolveSubscription(token, nowSeconds);
 
     if (!verification.ok) {
       return NextResponse.json({ error: verification.message }, { status: verification.status });
     }
 
-    const alreadyInvalidated = await isTokenRevoked(token, nowSeconds);
+    if (hasGitHubStorage()) {
+      const url = originalSubscriptionUrl(body.link, request, token);
+      const record = await invalidateStoredSubscription(token, verification.payload, url, nowSeconds);
+      return NextResponse.json({ ...record, alreadyExpired: record.expiresInSeconds <= 0 });
+    }
+
+    const alreadyInvalidated = verification.invalidated;
     const record = await revokeToken(token, verification.payload, nowSeconds);
 
     return NextResponse.json({
@@ -48,12 +57,12 @@ export async function POST(request: Request) {
       alreadyInvalidated
     });
   } catch (error) {
-    if (error instanceof BadRequestError) {
+    if (error instanceof BadRequestError || error instanceof URIError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
     const message = error instanceof Error ? error.message : "Failed to invalidate link.";
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: error instanceof StorageError ? error.status : 500 });
   }
 }

@@ -3,17 +3,19 @@ import { NextResponse } from "next/server";
 import { isAdminPasswordValid } from "@/lib/auth";
 import {
   BadRequestError,
-  buildSubscriptionUrl,
   extractTokenFromLinkInput
 } from "@/lib/link-admin";
-import { isTokenRevoked } from "@/lib/revoked-links";
-import { requireLinkSecret, verifySignedToken } from "@/lib/token";
+import { StorageError } from "@/lib/github-store";
+import { originalSubscriptionUrl, resolveSubscription } from "@/lib/subscriptions";
 
 type LinkStatusBody = {
   password?: unknown;
   link?: unknown;
   token?: unknown;
 };
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   let body: LinkStatusBody;
@@ -25,43 +27,42 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("Request body must be an object.");
     if (!isAdminPasswordValid(body.password)) {
       return NextResponse.json({ error: "Admin password is incorrect." }, { status: 401 });
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const token = extractTokenFromLinkInput(body.link ?? body.token);
-    const verification = verifySignedToken(token, requireLinkSecret(), nowSeconds, {
-      allowExpired: true
-    });
+    const verification = await resolveSubscription(token, nowSeconds);
 
     if (!verification.ok) {
       return NextResponse.json({ error: verification.message }, { status: verification.status });
     }
 
-    const invalidated = await isTokenRevoked(token, nowSeconds);
+    const invalidated = verification.invalidated;
     const { payload } = verification;
     const status = invalidated ? "invalidated" : verification.expired ? "expired" : "active";
 
     return NextResponse.json({
-      url: buildSubscriptionUrl(request, token),
+      url: verification.record?.url ?? originalSubscriptionUrl(body.link, request, token),
       token,
-      label: payload.label,
+      label: verification.label,
       issuedAt: new Date(payload.iat * 1000).toISOString(),
-      expiresAt: new Date(payload.exp * 1000).toISOString(),
-      expiresInSeconds: payload.exp - nowSeconds,
+      expiresAt: new Date(verification.expiresAtSeconds * 1000).toISOString(),
+      expiresInSeconds: verification.expiresAtSeconds - nowSeconds,
       expired: verification.expired,
       invalidated,
       valid: status === "active",
       status
     });
   } catch (error) {
-    if (error instanceof BadRequestError) {
+    if (error instanceof BadRequestError || error instanceof URIError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
     const message = error instanceof Error ? error.message : "Failed to query link status.";
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: error instanceof StorageError ? error.status : 500 });
   }
 }

@@ -504,6 +504,63 @@ h2 {
   min-width: 0;
 }
 
+.cloud-sync-panel {
+  display: grid;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  background: #f2faf8;
+  padding: 18px 20px;
+}
+
+.cloud-sync-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent-strong);
+  font-size: 0.9rem;
+}
+
+.cloud-state {
+  border-radius: 999px;
+  background: #fff7e6;
+  color: #b54708;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.cloud-state.configured {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.cloud-sync-panel > p {
+  overflow-wrap: anywhere;
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+  line-height: 1.65;
+}
+
+.cloud-sync-panel > .message.error {
+  color: var(--danger);
+}
+
+.cloud-sync-panel > .message.success {
+  color: var(--success);
+}
+
+.cloud-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cloud-sync-actions .primary-button {
+  width: auto;
+  flex: 1 1 220px;
+  padding: 0 14px;
+}
+
 .panel-heading {
   min-height: 80px;
   display: flex;
@@ -718,6 +775,7 @@ code {
 
 .row-actions {
   display: inline-flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
@@ -855,7 +913,8 @@ code {
   }
 
   .tool-form,
-  .panel-heading {
+  .panel-heading,
+  .cloud-sync-panel {
     padding: 16px;
   }
 
@@ -1017,7 +1076,7 @@ code {
   .row-actions {
     width: 100%;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 44px;
     justify-content: stretch;
   }
 

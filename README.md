@@ -1,415 +1,141 @@
 # Vercel YAML Expiring Links
 
-一个部署在 Vercel 上的限时 YAML 访问服务。管理员可以生成不同有效期的链接，用户访问链接时，服务端会先校验签名和过期时间，校验通过才返回 YAML 内容。
+部署在 Vercel 上的 YAML 订阅链接管理器。管理员可以生成订阅、查询状态、延长有效期和关闭订阅。订阅数据支持存入 GitHub 私有仓库，两个部署可以共用同一份数据。
 
-## 功能
+当前部署：
 
-- 为同一个 YAML 文件生成多个不同有效期的链接。
-- 查询某个链接的有效期、剩余时间和当前状态。
-- 对某个已有链接增加有效期。
-- 已过期但签名有效的链接，也可以由管理员延长并生成新的替代链接。
-- 对某个已有链接单独设置失效，访问时返回 `410 Gone`。
-- 链接过期后返回 `410 Gone`，不再暴露 YAML 内容。
-- 链接 token 使用 `LINK_SECRET` 做 HMAC 签名；单链接失效只存 token 哈希。
-- 管理页需要 `ADMIN_PASSWORD` 才能生成、查询、延长或失效链接。
-- 管理页可以把管理员密码记住在当前浏览器的本地缓存里。
-- 管理页会在当前浏览器永久保存全部生成历史；超过 20 条后支持搜索和分页查看，并可导出为 CSV、JSON 或 TXT。
-- YAML 来源支持环境变量内容、本地 YAML 文件、远程 YAML 链接，以及本地 txt 文件中的远程 YAML 链接。
-- YAML 不放在 `public/`，避免绕过服务端校验。
+- <https://v.bornforthis.cn>
+- <https://v.other.us.brclio.com>
 
-## 工作原理
+## 存储与旧链接兼容
 
-1. 管理页提交管理员密码和有效期到 `/api/links`。
-2. 服务端生成包含 `iat`、`exp`、`nonce` 的 payload。
-3. payload 会用 `LINK_SECRET` 签名，形成不可篡改 token。
-4. 用户访问 `/api/subscription/[token]`。
-5. 服务端验证签名和 `exp`。
-6. 服务端检查该 token 的哈希是否在失效清单中。
-7. 验证通过返回 `text/yaml`，过期或已失效返回 `410 Gone`。
+启用 GitHub 存储后，新生成的订阅会保存到私有仓库；浏览器原有的历史记录需要点击按钮上传。服务端按完整 token 的 SHA-256 合并记录，保留原 token、原订阅地址以及已保存的多个地址。
 
-延长已有链接时，管理页会提交旧链接到 `/api/extend-link`。服务端会允许解析“已过期但签名仍有效”的 token，然后生成一个新的替代链接：
+- **续期保持原 URL**：只修改仓库中的有效期，使用者无需更换订阅链接。已过期的订阅也可以续期。
+- **关闭订阅**：状态保存到仓库，两个部署访问同一 token 都返回 `410 Gone`。已关闭订阅不能续期。
+- **重复同步**：已有记录保留云端的有效期、备注和关闭状态，旧浏览器缓存不会覆盖云端变更。
+- **尚未迁移的旧链接**：继续用原部署的 `LINK_SECRET` 校验签名和原有效期。
+- **两个部署密钥不同**：首次迁移需要在最初生成链接的域名操作。通过签名验证并入库后，另一部署可以按完全相同的 token 查询、续期、关闭和访问。
 
-- 旧链接未过期：在旧链接原过期时间基础上增加时长。
-- 旧链接已过期：从当前时间开始增加时长。
-- 指定新的过期时间时，新时间必须晚于旧过期时间或当前时间。
+**请保留两个部署各自现有的 `LINK_SECRET`，不要为了共用仓库修改密钥。** 已入库记录是共享授权依据，后续轮换密钥只影响尚未入库的旧链接；关闭已托管订阅请使用管理页或关闭接口。
 
-失效已有链接时，管理页会提交旧链接到 `/api/invalidate-link`。服务端验证管理员密码和 token 签名后，把 token 的 SHA-256 哈希写入失效清单。原 URL 不会改变；之后访问同一个 URL 会返回 `This link has been invalidated.` 和 HTTP `410`。
+未配置 GitHub 存储时，继续保留原模式：历史记录只存浏览器，续期会生成新的替代链接，单链接关闭使用原有 KV/Upstash 或本地撤销文件。
 
-查询已有链接时，管理页会提交旧链接到 `/api/link-status`。服务端会验证管理员密码、token 签名、过期时间和失效清单，并返回 `active`、`expired` 或 `invalidated` 状态。查询结果里可以直接把链接带入延长或失效操作。
+## 配置 GitHub 私有仓库
 
-本地开发默认使用 `data/revoked-links.json` 保存失效清单。Vercel 等无状态部署需要配置 KV/Upstash 这类持久化存储，否则单链接失效无法跨实例可靠生效。
+数据仓库：[`AndersonHJB/vpn-userdata`](https://github.com/AndersonHJB/vpn-userdata)。服务端会检查仓库为私有，公开仓库会被拒绝。
 
-## 本地运行教程
+1. 确认仓库已经初始化，并且存在 `main` 分支。空仓库可先在 GitHub 添加 README 产生首次提交。
+2. 在 GitHub 创建 fine-grained personal access token，只选择这个数据仓库，授予仓库权限 **Contents: Read and write**。令牌需要能读取仓库信息和分支；GitHub 的 Metadata 读取权限随仓库授权提供。
+3. 在两个 Vercel 部署分别设置以下服务端环境变量：
 
-### 1. 安装 Node.js
+```dotenv
+GITHUB_STORAGE_REPO=AndersonHJB/vpn-userdata
+GITHUB_STORAGE_TOKEN=填写你自己的私有仓库令牌
+GITHUB_STORAGE_BRANCH=main
+GITHUB_STORAGE_PATH=subscriptions/links.json
+```
+
+`GITHUB_STORAGE_BRANCH` 默认是 `main`，`GITHUB_STORAGE_PATH` 默认是 `subscriptions/links.json`。文件可以不存在，首次成功写入时自动创建；分支必须事先存在。两个部署必须使用相同的仓库、分支和文件路径。
+
+令牌只放在服务端环境变量中，不要使用 `NEXT_PUBLIC_` 前缀，不要提交到代码仓库，也不要填入浏览器管理页。保留现有 `ADMIN_PASSWORD`、`LINK_SECRET`、YAML 来源及旧撤销存储配置。更新环境变量后重新部署两个项目。
+
+## 迁移两个域名的浏览器缓存
+
+浏览器本地缓存按域名隔离，需要在**原来保存过记录的浏览器和配置文件中**分别操作：
+
+1. 打开 `https://v.bornforthis.cn`，填写该部署的管理员密码。
+2. 在“GitHub 私有仓库同步”区域点击 **同步本机缓存到 GitHub**，检查新增、已存在和拒绝的数量。
+3. 打开 `https://v.other.us.brclio.com`，填写该部署的管理员密码，再点击 **同步本机缓存到 GitHub**。
+4. 两边点击 **读取 GitHub 数据**，检查订阅数量、原地址和状态。
+
+如果其他浏览器或设备也保存了独有历史，同样需要打开对应域名并同步。每批最多 200 条，管理页会自动分批；失败后本机缓存保留，可以重试。遇到“旧链接签名无效”时，请到最初生成它的域名同步。
+
+首次导入的有效期取自原签名 token，浏览器中缓存的期限不能擅自延长订阅。旧缓存中的关闭标记和旧撤销存储会用于保留关闭状态。同步不会清空本地历史，也不会重签名或替换用户已收到的 URL。
+
+读取 GitHub 数据会合并本机独有记录。清空本地列表只影响当前浏览器，不删除 GitHub 中的订阅；可以再次读取恢复。历史仍支持搜索、分页及 CSV、JSON、TXT 导出。
+
+## 续期、关闭与访问
+
+生成、查询、续期、关闭、读取和同步都需要管理员密码。访问订阅 URL 本身使用 token 授权。
+
+续期可在列表中点击“续期”，或在“延长已有链接”中粘贴完整旧 URL：
+
+- 未过期：从原过期时间继续增加。
+- 已过期：从当前时间继续增加。
+- 指定时间：必须晚于当前时间及原过期时间。
+- 启用 GitHub 存储后：更新原 token 对应记录，原 URL 保持可用，并返回新的到期时间。
+- 未启用 GitHub 存储时：生成新的替代 URL，需要将新地址交给使用者。
+
+关闭可使用列表中的“失效”按钮或“失效已有链接”表单。关闭和过期的订阅访问均返回 `410 Gone`；有效订阅返回 YAML，并在 `subscription-userinfo` 响应头中提供实际到期时间。
+
+两个部署共用托管 token 的授权，但各自仍使用自身配置的 YAML 来源。需要提供相同内容时，请确保两边 YAML 来源一致。
+
+## 以后只保留一个部署
+
+先在两个域名完成同步，确认保留部署可以读取、续期和关闭双方迁移的记录。随后将被撤掉部署的**原域名也绑定并指向保留部署**，验证原订阅 URL 仍可访问，再删除旧项目。
+
+用户手中的完整 URL 包含域名。仅迁移数据不能替代域名路由；要保留旧链接，旧域名需要继续提供访问入口。
+
+## 存储故障和容量
+
+配置了 GitHub 存储后，服务端在订阅访问及管理操作中读取仓库。连接超时、权限错误、分支不存在、数据文件损坏或 API 配额不足时返回 `503`，不会退回原签名放行，以保证已关闭订阅不会因故障恢复访问。管理页保留浏览器缓存，修复配置后可以重试。恢复服务应修复仓库访问，保留存储配置和现有数据。
+
+写入使用 GitHub 文件 SHA 检测并发修改，冲突时读取最新版本重试；管理页续期请求携带操作标识，避免同一次请求重试重复加时。
+
+本实现适合小型部署：每次访问会消耗 GitHub API 请求配额，整份订阅文件单次写入上限为 **900,000 字节**。超过限制会取消写入；高频访问或更大规模应先改用分片存储或数据库。私有仓库中的 URL 和 token 是订阅访问凭证，应限制仓库和令牌的访问权限。
+
+## 本地运行
 
 建议使用 Node.js 20 或更新版本。
 
-查看本机版本：
-
-```bash
-node -v
-npm -v
-```
-
-### 2. 安装依赖
-
 ```bash
 npm install
-```
-
-### 3. 创建本地环境变量
-
-```bash
 cp .env.example .env.local
 openssl rand -base64 32
 ```
 
-打开 `.env.local`，至少设置：
+在 `.env.local` 设置 `ADMIN_PASSWORD` 和至少 32 个字符的 `LINK_SECRET`。新环境可以用上面的命令生成密钥；已有部署必须保留原密钥。需要 GitHub 存储时取消示例中相关变量的注释并填写令牌。
 
-```bash
-ADMIN_PASSWORD=你的管理员密码
-LINK_SECRET=刚才 openssl 生成的随机字符串
-YAML_CONTENT=
-YAML_SOURCE_URL=
-YAML_FILE_PATH=data/subscription.yaml
-MAX_LINK_TTL_DAYS=365
-REVOKED_LINKS_FILE_PATH=data/revoked-links.json
-```
+YAML 来源按以下优先级选择：
 
-`LINK_SECRET` 至少 32 个字符。不要把 `.env.local` 提交到 GitHub。
+1. `YAML_CONTENT`：完整 YAML 文本。
+2. `YAML_SOURCE_URL`：远程 YAML URL。
+3. `YAML_FILE_PATH`：本地 YAML 文件，或仅包含一条远程 YAML URL 的 txt 文件。
 
-### 4. 配置 YAML 来源
-
-项目支持三种 YAML 来源，优先级从高到低是：
-
-1. `YAML_CONTENT`：直接把完整 YAML 内容放进环境变量。
-2. `YAML_SOURCE_URL`：从远程订阅链接读取 YAML。
-3. `YAML_FILE_PATH`：读取本地 YAML 文件，或读取本地 txt 文件中的远程 YAML 链接。
-
-方式 A：直接写入环境变量。
-
-```bash
-YAML_CONTENT="proxies:
-  - name: example
-    type: ss"
-```
-
-方式 B：读取远程 YAML 链接。
-
-```bash
-YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
-```
-
-方式 C：读取本地文件。
+本地文件示例：
 
 ```bash
 cp data/subscription.example.yaml data/subscription.yaml
-```
-
-然后把 `data/subscription.yaml` 替换成你的真实 YAML 内容。
-
-也可以让本地文件只保存一个上游订阅 URL：
-
-```bash
-cp data/iggfeed.example.txt data/iggfeed.txt
-```
-
-然后把 `data/iggfeed.txt` 替换成真实 URL，并设置：
-
-```bash
-YAML_FILE_PATH=data/iggfeed.txt
-```
-
-`data/iggfeed.txt` 去掉空行和 `#` 注释后只能有一行，且这一行必须是 `http://` 或 `https://` 链接。服务端会读取这个本地文件，再拉取该链接对应的 YAML。
-
-注意：如果同时设置了 `YAML_CONTENT` 和 `YAML_SOURCE_URL`，会优先使用 `YAML_CONTENT`。`data/subscription.yaml`、`data/iggfeed.txt` 和 `data/revoked-links.json` 已经在 `.gitignore` 里，不会被提交。不要把真实 YAML 或真实订阅链接放到 `public/` 目录。
-
-### 5. 启动本地服务
-
-```bash
+# 或使用 data/iggfeed.example.txt 创建自己的本地 URL 文件。
 npm run dev
 ```
 
-浏览器打开：
+打开 <http://localhost:3000>。真实 YAML、上游 URL、密码、令牌和 `.env.local` 都不应提交到公开仓库，YAML 不应放入 `public/`。
 
-```text
-http://localhost:3000
-```
+本地未启用 GitHub 时，撤销记录默认存于 `data/revoked-links.json`。Vercel 未启用 GitHub 时，如需单链接关闭，应配置 `KV_REST_API_URL` / `KV_REST_API_TOKEN`，或 `LINK_REVOCATION_UPSTASH_REST_URL` / `LINK_REVOCATION_UPSTASH_REST_TOKEN`；Vercel 实例本地文件不能可靠持久化。启用 GitHub 后仍会检查已有的撤销存储，迁移期间请保留原配置。
 
-输入管理员密码，选择有效期，生成链接。复制生成的链接后，在浏览器或客户端里访问即可得到 YAML。
+## 部署与验证
 
-## GitHub 推送教程
-
-如果你需要重新创建并推送到 GitHub，可以按下面做。
-
-### 1. 登录 GitHub CLI
+将代码推送到 GitHub，在 Vercel 导入 Next.js 项目，设置上述服务端环境变量及 YAML 来源后部署。后续代码更新可通过 Git 推送触发部署；修改环境变量后需要重新部署。
 
 ```bash
-gh auth login
-gh auth status
-```
-
-### 2. 初始化 Git
-
-```bash
-git init
-git branch -M main
-git add .
-git commit -m "Initial Vercel YAML link manager"
-```
-
-### 3. 创建远端仓库并推送
-
-公开仓库：
-
-```bash
-gh repo create VercelVPN --public --source=. --remote=origin --push
-```
-
-私有仓库：
-
-```bash
-gh repo create VercelVPN --private --source=. --remote=origin --push
-```
-
-如果远端已经存在：
-
-```bash
-git remote add origin git@github.com:你的用户名/VercelVPN.git
-git push -u origin main
-```
-
-GitHub CLI 官方文档：<https://cli.github.com/manual/gh_repo_create>
-
-## Vercel 手把手部署教程
-
-### 1. 准备 GitHub 仓库
-
-确认代码已经推送到 GitHub，并且仓库里不要包含：
-
-- `.env`
-- `.env.local`
-- `data/subscription.yaml`
-- `data/revoked-links.json`
-- 任何真实密码、token、订阅链接或密钥
-
-### 2. 打开 Vercel
-
-进入 Vercel Dashboard：
-
-```text
-https://vercel.com/dashboard
-```
-
-点击右上角 `New Project`。
-
-### 3. 导入 GitHub 仓库
-
-1. 选择 GitHub。
-2. 找到 `VercelVPN` 仓库。
-3. 点击 `Import`。
-4. Framework Preset 选择 `Next.js`。
-5. Root Directory 保持默认项目根目录。
-6. Build Command 保持默认 `next build`。
-7. Output Directory 留空。
-
-Vercel Git 部署文档：<https://vercel.com/docs/git>
-
-### 4. 配置环境变量
-
-在导入项目页面的 `Environment Variables` 区域添加：
-
-```bash
-ADMIN_PASSWORD=你的管理员密码
-LINK_SECRET=至少32字符的随机字符串
-YAML_CONTENT=你的完整YAML内容
-YAML_SOURCE_URL=https://example.com/path/to/subscription.yaml
-YAML_FILE_PATH=data/subscription.yaml
-# 或者 YAML_FILE_PATH=data/iggfeed.txt
-MAX_LINK_TTL_DAYS=365
-KV_REST_API_URL=你的 KV 或 Upstash REST URL
-KV_REST_API_TOKEN=你的 KV 或 Upstash REST token
-```
-
-三种 YAML 来源选一种即可：
-
-- 小型 YAML：推荐 `YAML_CONTENT`。
-- 已经有订阅源链接：推荐 `YAML_SOURCE_URL`。
-- 本地开发：可以用 `YAML_FILE_PATH=data/subscription.yaml` 读取本地 YAML，或用 `YAML_FILE_PATH=data/iggfeed.txt` 读取本地 txt 中保存的订阅 URL。
-
-如果你需要在 Vercel 上使用“单链接失效”，请配置 `KV_REST_API_URL` 和 `KV_REST_API_TOKEN`。如果你使用自建 Upstash 兼容 REST 存储，也可以改用 `LINK_REVOCATION_UPSTASH_REST_URL` 和 `LINK_REVOCATION_UPSTASH_REST_TOKEN`。没有这些变量时，Vercel 上的失效接口会提示撤销存储未配置。
-
-如果在 Vercel 上使用 `YAML_SOURCE_URL`，或使用指向 txt 的 `YAML_FILE_PATH`，每次访问限时链接时服务端都会去拉取上游 YAML 链接。远程请求有 10 秒超时，且不会缓存。
-
-不要在 Vercel 上依赖 `data/subscription.yaml` 或 `data/iggfeed.txt`，因为真实 YAML 和真实订阅链接不应该提交到 GitHub。
-
-生成 `LINK_SECRET` 的命令：
-
-```bash
-openssl rand -base64 32
-```
-
-Vercel 的 Node.js 环境变量总大小限制是 64KB。如果你的 YAML 很大，`YAML_CONTENT` 放不下，可以改用 `YAML_SOURCE_URL`，或接入 Vercel Blob、数据库、受保护对象存储。
-
-Vercel 环境变量文档：<https://vercel.com/docs/environment-variables>
-
-### 5. 点击 Deploy
-
-点击 `Deploy`，等待构建完成。
-
-部署成功后，Vercel 会给你一个域名，例如：
-
-```text
-https://your-project.vercel.app
-```
-
-打开这个域名就是管理页。
-
-### 6. 后续更新
-
-以后修改代码后：
-
-```bash
-git add .
-git commit -m "Update app"
-git push
-```
-
-Vercel 会自动从 GitHub 触发新的部署。环境变量修改后，只会影响新的部署；如果改了环境变量，请在 Vercel 里重新部署一次。
-
-## 使用教程
-
-### 生成限时链接
-
-1. 打开你的 Vercel 域名。
-2. 在 `管理员密码` 输入 `ADMIN_PASSWORD`。
-3. `链接备注` 可以写客户名、设备名或用途。
-4. 选择 `按时长` 或 `指定时间`。
-5. 点击 `生成链接`。
-6. 点击 `复制`。
-
-### 访问 YAML
-
-生成的链接类似：
-
-```text
-https://your-project.vercel.app/api/subscription/eyJ2Ijox...
-```
-
-访问这个链接时：
-
-- 未过期：返回 YAML 内容。
-- 已过期：返回 `This link has expired.` 和 HTTP `410`。
-- 已失效：返回 `This link has been invalidated.` 和 HTTP `410`。
-- token 被改动：返回 `Invalid link.` 和 HTTP `403` 或 `400`。
-
-### 查询链接有效期
-
-1. 打开你的 Vercel 域名。
-2. 找到 `查询有效期` 区域。
-3. 输入 `ADMIN_PASSWORD`。
-4. 粘贴完整旧链接，或只粘贴 token。
-5. 点击 `查询有效期`。
-
-查询结果会显示链接状态、过期时间、剩余时间和创建时间：
-
-- `有效`：可以直接复制、带入延长操作或带入失效操作。
-- `已过期`：可以带入延长操作，生成新的替代链接。
-- `已失效`：不能继续访问，也不能继续延长。
-
-如果希望当前浏览器记住管理员密码，勾选 `记住密码`。密码只保存在当前浏览器的本地缓存中，点击 `清除缓存` 可以删除。
-
-### 给不同用户设置不同有效期
-
-示例：
-
-- 临时测试：30 分钟。
-- 短期用户：7 天。
-- 长期用户：30 天。
-
-每次生成的链接都有独立 token。即使有效期相同，链接也不同。
-
-### 延长已有链接
-
-1. 打开你的 Vercel 域名。
-2. 找到 `延长已有链接` 区域。
-3. 输入 `ADMIN_PASSWORD`。
-4. 粘贴完整旧链接，或只粘贴 token。
-5. 可选填写 `新备注`，留空会沿用旧备注。
-6. 选择 `按时长` 或 `指定时间`。
-7. 点击 `延长并生成新链接`。
-8. 复制新生成的替代链接发给使用者。
-
-延长规则：
-
-- 旧链接还没过期：例如原本明天过期，增加 7 天后，会变成从明天再往后 7 天。
-- 旧链接已经过期：例如昨天过期，增加 7 天后，会变成从现在开始 7 天。
-- 旧链接 token 被篡改：不能延长，会返回 `Invalid link.`。
-
-注意：延长后得到的是新 URL，旧 URL 不会变。如果旧 URL 不应该继续可用，可以再执行失效操作。
-
-### 失效已有链接
-
-方式 A：在 `最近生成` 列表里找到对应链接，点击 `失效`。
-
-方式 B：打开 `失效已有链接` 区域：
-
-1. 输入 `ADMIN_PASSWORD`。
-2. 粘贴完整旧链接，或只粘贴 token。
-3. 点击 `确认失效`。
-
-失效后，同一个 URL 会返回 `410 Gone`。延长接口也会拒绝继续延长已失效的链接。
-
-### 立即让所有链接失效
-
-1. 打开 Vercel 项目设置。
-2. 找到 `Environment Variables`。
-3. 修改 `LINK_SECRET` 为新的随机字符串。
-4. 重新部署项目。
-
-完成后，旧链接都会变成无效链接。
-
-## 安全注意事项
-
-- 不要把真实 YAML 放进 `public/`。
-- 不要提交 `.env.local`。
-- 不要把 `ADMIN_PASSWORD` 和 `LINK_SECRET` 发给使用者。
-- 如果 `YAML_SOURCE_URL` 本身是敏感订阅源，不要把它写进 README、前端代码或公开仓库，只放在 Vercel 环境变量里。
-- 如果把敏感订阅源写在 `data/iggfeed.txt` 这类本地 URL 文件里，也不要提交到 GitHub。
-- 单链接失效只保存 token 的 SHA-256 哈希，不保存原始订阅 URL 或 token。
-- `LINK_SECRET` 改了以后，所有旧链接都会失效。
-- 在 Vercel 上使用单链接失效时，需要 KV/Upstash 这类持久化存储。
-- 如果要支持访问次数限制、用户列表、访问日志，需要增加数据库。
-
-## 常用命令
-
-```bash
-npm install
-npm run dev
 npm run typecheck
 npm run build
 npm audit --omit=dev
 ```
 
-## 项目结构
+上线后先生成测试订阅，验证读取、同步、原 URL 续期、关闭及双域访问，再检查已有订阅的状态。以两个域名的实际同步结果和原 URL 访问结果确认迁移完成。
 
-```text
-app/
-  api/
-    links/route.ts                 # 生成签名链接
-    link-status/route.ts           # 查询链接有效期和状态
-    extend-link/route.ts           # 延长已有链接并生成替代链接
-    invalidate-link/route.ts       # 将某个链接写入失效清单
-    subscription/[token]/route.ts  # 校验 token 并返回 YAML
-  page.tsx                         # 管理页面
-lib/
-  auth.ts                          # 管理员密码校验
-  link-admin.ts                    # 链接生成和延长的通用规则
-  revoked-links.ts                 # token 哈希失效清单存储
-  token.ts                         # HMAC token 签名和验证
-  yaml.ts                          # 读取 YAML_CONTENT、YAML_SOURCE_URL、YAML_FILE_PATH 或本地 URL 文件
-data/
-  subscription.example.yaml        # 示例 YAML
-  iggfeed.example.txt              # 本地 URL 文件示例
-```
+## 主要接口
+
+| 接口 | 用途 |
+| --- | --- |
+| `POST /api/links` | 生成订阅，启用存储时自动入库 |
+| `POST /api/subscriptions` | `action: "list"` 读取，`action: "sync"` 合并浏览器历史 |
+| `POST /api/link-status` | 查询状态和实际有效期 |
+| `POST /api/extend-link` | 续期；启用存储时保留原 token |
+| `POST /api/invalidate-link` | 关闭订阅 |
+| `GET /api/subscription/[token]` | 校验托管状态或旧签名后返回 YAML |
+
+管理接口均通过 JSON 请求体中的 `password` 校验管理员密码。GitHub 存储实现在 `lib/github-store.ts`，共享订阅规则在 `lib/subscriptions.ts`，旧撤销存储兼容逻辑在 `lib/revoked-links.ts`。

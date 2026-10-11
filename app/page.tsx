@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type GeneratedLink = {
   url: string;
@@ -13,6 +13,7 @@ type GeneratedLink = {
   previousExpiresAt?: string;
   wasExpired?: boolean;
   source?: "created" | "extended";
+  urls?: string[];
 };
 
 type LinkResponse = {
@@ -23,6 +24,18 @@ type LinkResponse = {
   expiresInSeconds?: number;
   previousExpiresAt?: string;
   wasExpired?: boolean;
+  unchangedUrl?: boolean;
+  createdAt?: string;
+  urls?: string[];
+  error?: string;
+};
+
+type SubscriptionsResponse = {
+  configured: boolean;
+  links?: GeneratedLink[];
+  imported?: number;
+  existing?: number;
+  rejected?: { index: number; error: string }[];
   error?: string;
 };
 
@@ -68,11 +81,13 @@ type HistoryExportRecord = {
   previousExpiresAt?: string;
   wasExpired?: boolean;
   source?: "created" | "extended";
+  urls?: string[];
 };
 
 const storageKey = "yaml-link-history";
 const passwordStorageKey = "yaml-link-admin-password";
 const historyPageSize = 20;
+const syncBatchSize = 200;
 
 export default function Home() {
   const [workMode, setWorkMode] = useState<WorkMode>("create");
@@ -97,6 +112,8 @@ export default function Home() {
 
   const [links, setLinks] = useState<GeneratedLink[]>([]);
   const [historyCacheLoaded, setHistoryCacheLoaded] = useState(false);
+  const [historyCacheWritable, setHistoryCacheWritable] = useState(false);
+  const [historyCacheWarning, setHistoryCacheWarning] = useState("");
   const [historySearch, setHistorySearch] = useState("");
   const [historyPage, setHistoryPage] = useState(1);
   const [historyExportFormat, setHistoryExportFormat] = useState<HistoryExportFormat>("csv");
@@ -115,6 +132,13 @@ export default function Home() {
   const [isExtending, setIsExtending] = useState(false);
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [invalidatingToken, setInvalidatingToken] = useState("");
+  const [cloudConfigured, setCloudConfigured] = useState<boolean | null>(null);
+  const [cloudAction, setCloudAction] = useState<"list" | "sync" | null>(null);
+  const [cloudStatus, setCloudStatus] = useState("");
+  const [cloudStatusKind, setCloudStatusKind] = useState<MessageKind>("success");
+  const extensionAttempt = useRef<{ fingerprint: string; operationId: string } | null>(null);
+  const isCloudBusy = cloudAction !== null;
+  const isMutating = isSubmitting || isExtending || isInvalidating || Boolean(invalidatingToken);
 
   useEffect(() => {
     try {
@@ -127,21 +151,24 @@ export default function Home() {
           throw new Error("历史缓存格式无效");
         }
 
-        setLinks(mergeGeneratedLinks([], parsed.filter(isGeneratedLink)));
+        const storedLinks = parsed.filter(isGeneratedLink);
+        setLinks(mergeGeneratedLinks([], storedLinks));
+
+        if (storedLinks.length !== parsed.length) {
+          throw new Error("历史缓存包含无法识别的记录");
+        }
       }
-    } catch {
-      try {
-        window.localStorage.removeItem(storageKey);
-      } catch {
-        // The persistence effect below reports unavailable browser storage.
-      }
+      setHistoryCacheWritable(true);
+    } catch (caught) {
+      const reason = caught instanceof Error ? caught.message : "历史缓存读取失败";
+      setHistoryCacheWarning(`${reason}。原始缓存已保留，本次暂停自动写入；请先备份浏览器缓存再处理。`);
     } finally {
       setHistoryCacheLoaded(true);
     }
   }, []);
 
   useEffect(() => {
-    if (!historyCacheLoaded) {
+    if (!historyCacheLoaded || !historyCacheWritable) {
       return;
     }
 
@@ -151,7 +178,7 @@ export default function Home() {
       setHistoryStatusKind("error");
       setHistoryStatus("历史缓存写入失败，请检查浏览器存储空间");
     }
-  }, [historyCacheLoaded, links]);
+  }, [historyCacheLoaded, historyCacheWritable, links]);
 
   useEffect(() => {
     function syncHistoryAcrossTabs(event: StorageEvent) {
@@ -162,8 +189,8 @@ export default function Home() {
       try {
         const parsed: unknown = event.newValue ? JSON.parse(event.newValue) : [];
 
-        if (!Array.isArray(parsed)) {
-          return;
+        if (!Array.isArray(parsed) || !parsed.every(isGeneratedLink)) {
+          throw new Error("其它标签页写入了无法识别的历史缓存");
         }
 
         if (parsed.length === 0) {
@@ -173,13 +200,10 @@ export default function Home() {
           return;
         }
 
-        const storedLinks = parsed.filter(isGeneratedLink);
-
-        if (storedLinks.length > 0) {
-          setLinks((current) => mergeGeneratedLinks(current, storedLinks));
-        }
+        setLinks((current) => mergeCloudGeneratedLinks(current, parsed));
       } catch {
-        // Ignore malformed writes from another tab and preserve the current history.
+        setHistoryCacheWritable(false);
+        setHistoryCacheWarning("其它标签页的历史缓存读取异常，原始缓存已保留，本次暂停自动写入。");
       }
     }
 
@@ -188,14 +212,23 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const savedPassword = window.localStorage.getItem(passwordStorageKey);
+    extensionAttempt.current = null;
+  }, [password, extendLinkInput, extendLabel, extendMode, extendDurationValue, extendDurationUnit, extendExactTime]);
 
-    if (savedPassword) {
-      setPassword(savedPassword);
-      setRememberPassword(true);
+  useEffect(() => {
+    try {
+      const savedPassword = window.localStorage.getItem(passwordStorageKey);
+
+      if (savedPassword) {
+        setPassword(savedPassword);
+        setRememberPassword(true);
+      }
+    } catch {
+      setHistoryStatusKind("error");
+      setHistoryStatus("浏览器密码缓存不可用，请手动输入管理员密码");
+    } finally {
+      setPasswordCacheLoaded(true);
     }
-
-    setPasswordCacheLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -203,12 +236,17 @@ export default function Home() {
       return;
     }
 
-    if (rememberPassword && password) {
-      window.localStorage.setItem(passwordStorageKey, password);
-      return;
-    }
+    try {
+      if (rememberPassword && password) {
+        window.localStorage.setItem(passwordStorageKey, password);
+        return;
+      }
 
-    window.localStorage.removeItem(passwordStorageKey);
+      window.localStorage.removeItem(passwordStorageKey);
+    } catch {
+      setHistoryStatusKind("error");
+      setHistoryStatus("浏览器密码缓存写入失败，本次仍可使用已输入的密码");
+    }
   }, [password, passwordCacheLoaded, rememberPassword]);
 
   const ttlMinutes = useDurationMinutes(durationValue, durationUnit);
@@ -236,6 +274,107 @@ export default function Home() {
   useEffect(() => {
     setHistoryPage((current) => Math.min(current, historyPageCount));
   }, [historyPageCount]);
+
+  async function readCloudSubscriptions() {
+    setCloudStatus("");
+    setCloudStatusKind("success");
+
+    if (!password) {
+      setCloudStatusKind("error");
+      setCloudStatus("请先在左侧填写管理员密码，再读取 GitHub 数据。");
+      return;
+    }
+
+    setCloudAction("list");
+
+    try {
+      const data = await postJson<SubscriptionsResponse>(
+        "/api/subscriptions",
+        { password, action: "list" },
+        "读取 GitHub 数据失败"
+      );
+      setCloudConfigured(data.configured);
+
+      if (!data.configured) {
+        setCloudStatusKind("error");
+        setCloudStatus("服务端尚未配置 GitHub 私有仓库存储，本机缓存已保留。");
+        return;
+      }
+
+      const cloudLinks = getCloudLinks(data);
+      setLinks((current) => mergeCloudGeneratedLinks(current, cloudLinks));
+      setQueryResult(null);
+      setQueryStatus("");
+      setCloudStatus(`已读取 GitHub 的 ${cloudLinks.length} 条订阅，本机独有的缓存和原链接均已保留。`);
+    } catch (caught) {
+      setCloudStatusKind("error");
+      setCloudStatus(`${caught instanceof Error ? caught.message : "读取 GitHub 数据失败"}。本机缓存已保留，请重试。`);
+    } finally {
+      setCloudAction(null);
+    }
+  }
+
+  async function syncLocalSubscriptions() {
+    setCloudStatus("");
+    setCloudStatusKind("success");
+
+    if (!password) {
+      setCloudStatusKind("error");
+      setCloudStatus("请先在左侧填写管理员密码，再同步本机缓存。");
+      return;
+    }
+
+    const localLinks = [...links];
+
+    if (localLinks.length === 0) {
+      setCloudStatus("本机没有可同步的记录，可以点击「读取 GitHub 数据」。");
+      return;
+    }
+
+    const batchCount = Math.ceil(localLinks.length / syncBatchSize);
+    let completedBatches = 0;
+    let imported = 0;
+    let existing = 0;
+    const rejected: { index: number; error: string }[] = [];
+    setCloudAction("sync");
+
+    try {
+      for (let offset = 0; offset < localLinks.length; offset += syncBatchSize) {
+        setCloudStatus(`正在同步第 ${completedBatches + 1} / ${batchCount} 批，每批最多 ${syncBatchSize} 条…`);
+        const data = await postJson<SubscriptionsResponse>(
+          "/api/subscriptions",
+          { password, action: "sync", links: localLinks.slice(offset, offset + syncBatchSize) },
+          "同步 GitHub 数据失败"
+        );
+        setCloudConfigured(data.configured);
+
+        if (!data.configured) {
+          throw new Error("服务端尚未配置 GitHub 私有仓库存储");
+        }
+
+        const cloudLinks = getCloudLinks(data);
+        imported += data.imported || 0;
+        existing += data.existing || 0;
+        rejected.push(...(data.rejected || []).map((item) => ({ ...item, index: item.index + offset })));
+        completedBatches += 1;
+        setLinks((current) => mergeCloudGeneratedLinks(current, cloudLinks));
+        setQueryResult(null);
+        setQueryStatus("");
+      }
+
+      const result = `已完成 ${completedBatches} 批：新增 ${imported} 条，已存在 ${existing} 条，拒绝 ${rejected.length} 条。`;
+      setCloudStatusKind(rejected.length > 0 ? "error" : "success");
+      setCloudStatus(`${result}${formatSyncRejections(rejected)}本机缓存和原链接均已保留；旧缓存不会覆盖云端续期或关闭状态。`);
+    } catch (caught) {
+      setCloudStatusKind("error");
+      const reason = caught instanceof Error ? caught.message : "同步 GitHub 数据失败";
+      setCloudStatus(
+        `${reason}。已确认完成 ${completedBatches} / ${batchCount} 批：新增 ${imported} 条，已存在 ${existing} 条，拒绝 ${rejected.length} 条。${formatSyncRejections(rejected)}本机缓存已保留，可再次点击同步继续。`
+      );
+    } finally {
+      setCloudAction(null);
+    }
+  }
 
   async function createLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -265,7 +404,7 @@ export default function Home() {
         source: "created"
       });
 
-      setLinks((current) => [nextLink, ...current]);
+      setLinks((current) => mergeCloudGeneratedLinks(current, [nextLink]));
       setHistorySearch("");
       setHistoryPage(1);
       setStatus("链接已生成，已加入右侧列表");
@@ -312,32 +451,50 @@ export default function Home() {
     setHistoryStatusKind("success");
     setIsExtending(true);
 
-    const payload =
-      extendMode === "exact"
-        ? {
-            password,
-            link: extendLinkInput,
-            label: extendLabel,
-            expiresAt: extendExactTime ? new Date(extendExactTime).toISOString() : ""
-          }
-        : {
-            password,
-            link: extendLinkInput,
-            label: extendLabel,
-            ttlMinutes: extendTtlMinutes
-          };
-
     try {
-      const data = await postLink("/api/extend-link", payload, "延长链接失败");
+      const payload =
+        extendMode === "exact"
+          ? {
+              password,
+              link: extendLinkInput,
+              label: extendLabel,
+              expiresAt: extendExactTime ? new Date(extendExactTime).toISOString() : ""
+            }
+          : {
+              password,
+              link: extendLinkInput,
+              label: extendLabel,
+              ttlMinutes: extendTtlMinutes
+            };
+      const fingerprint = JSON.stringify(payload);
+
+      if (extensionAttempt.current?.fingerprint !== fingerprint) {
+        extensionAttempt.current = { fingerprint, operationId: crypto.randomUUID() };
+      }
+
+      const data = await postLink(
+        "/api/extend-link",
+        { ...payload, operationId: extensionAttempt.current.operationId },
+        "延长链接失败"
+      );
       const nextLink = toGeneratedLink(data, {
         label: extendLabel.trim() || data.label || "延长后的链接",
         source: "extended"
       });
 
-      setLinks((current) => [nextLink, ...current]);
+      extensionAttempt.current = null;
+      setLinks((current) => mergeCloudGeneratedLinks(current, [nextLink]));
+      setQueryResult(null);
+      setQueryStatus("");
       setHistorySearch("");
       setHistoryPage(1);
-      setExtendStatus(data.wasExpired ? "过期链接已延长，已生成新的替代链接" : "链接已延长，已生成新的替代链接");
+      setExtendStatus(
+        data.unchangedUrl
+          ? "有效期已更新并保存到 GitHub，原订阅链接保持不变"
+          : data.wasExpired
+            ? "过期链接已延长，已生成新的替代链接"
+            : "链接已延长，已生成新的替代链接"
+      );
     } catch (caught) {
       setExtendError(caught instanceof Error ? caught.message : "延长链接失败");
     } finally {
@@ -455,6 +612,14 @@ export default function Home() {
     setWorkMode("extend");
   }
 
+  function useGeneratedLinkForExtend(link: GeneratedLink) {
+    setExtendLinkInput(link.url);
+    setExtendLabel(link.label || "");
+    setExtendError("");
+    setExtendStatus("已填入列表中的链接，可设置增加时长或新的到期时间");
+    setWorkMode("extend");
+  }
+
   function useQueriedLinkForInvalidate() {
     const value = queryResult?.url || queryLinkInput.trim();
 
@@ -469,17 +634,40 @@ export default function Home() {
   }
 
   function forgetSavedPassword() {
-    window.localStorage.removeItem(passwordStorageKey);
-    setRememberPassword(false);
-    setPassword("");
-    setHistoryStatusKind("success");
-    setHistoryStatus("已清除当前浏览器缓存的管理员密码");
+    try {
+      window.localStorage.removeItem(passwordStorageKey);
+      setRememberPassword(false);
+      setPassword("");
+      setHistoryStatusKind("success");
+      setHistoryStatus("已清除当前浏览器缓存的管理员密码");
+    } catch {
+      setHistoryStatusKind("error");
+      setHistoryStatus("清除密码缓存失败，请检查浏览器存储权限");
+    }
   }
 
   function markLinkInvalidated(token: string, invalidatedAt: string) {
     setLinks((current) =>
       current.map((link) => (link.token === token ? { ...link, invalidatedAt } : link))
     );
+    setQueryResult(null);
+    setQueryStatus("");
+  }
+
+  function clearLocalHistory() {
+    try {
+      window.localStorage.setItem(storageKey, "[]");
+      setLinks([]);
+      setHistoryCacheWritable(true);
+      setHistoryCacheWarning("");
+      setHistorySearch("");
+      setHistoryPage(1);
+      setHistoryStatusKind("success");
+      setHistoryStatus("本地列表已清空，GitHub 数据保留，可再次读取");
+    } catch {
+      setHistoryStatusKind("error");
+      setHistoryStatus("清空本地列表失败，原缓存已保留");
+    }
   }
 
   return (
@@ -579,7 +767,7 @@ export default function Home() {
                 durationLabel="有效期"
               />
 
-              <button className="primary-button" type="submit" disabled={isSubmitting}>
+              <button className="primary-button" type="submit" disabled={isSubmitting || isCloudBusy}>
                 {isSubmitting ? "生成中..." : "生成链接"}
               </button>
 
@@ -609,7 +797,7 @@ export default function Home() {
                 required
               />
 
-              <button className="primary-button" type="submit" disabled={isQuerying}>
+              <button className="primary-button" type="submit" disabled={isQuerying || isCloudBusy}>
                 {isQuerying ? "查询中..." : "查询有效期"}
               </button>
 
@@ -628,7 +816,7 @@ export default function Home() {
             <form className="tool-form" onSubmit={extendExistingLink}>
               <div className="form-title">
                 <h1 id="tool-title">延长已有链接</h1>
-                <p>未过期链接从原过期时间继续增加；已过期链接从当前时间重新延长。</p>
+                <p>未过期链接从原过期时间继续增加；已过期链接从当前时间重新延长。启用 GitHub 存储后，原链接保持不变。</p>
               </div>
 
               <div className="field-grid">
@@ -668,8 +856,8 @@ export default function Home() {
                 durationLabel="增加时长"
               />
 
-              <button className="primary-button" type="submit" disabled={isExtending}>
-                {isExtending ? "延长中..." : "延长并生成新链接"}
+              <button className="primary-button" type="submit" disabled={isExtending || isCloudBusy}>
+                {isExtending ? "延长中..." : "延长链接有效期"}
               </button>
 
               {extendError ? <p className="message error">{extendError}</p> : null}
@@ -698,7 +886,7 @@ export default function Home() {
                 required
               />
 
-              <button className="primary-button danger-primary" type="submit" disabled={isInvalidating}>
+              <button className="primary-button danger-primary" type="submit" disabled={isInvalidating || isCloudBusy}>
                 {isInvalidating ? "失效中..." : "确认失效"}
               </button>
 
@@ -711,11 +899,10 @@ export default function Home() {
         <section className="history-panel" aria-labelledby="history-title">
           <div className="panel-heading">
             <div>
-              <h2 id="history-title">最近生成</h2>
-              <p>永久保存在当前浏览器，共 {links.length} 条。</p>
+              <h2 id="history-title">订阅列表</h2>
+              <p>本机可见 {links.length} 条，浏览器缓存与 GitHub 数据可手动合并。</p>
             </div>
             <div className="history-actions">
-              {historyStatus ? <span className={historyStatusKind === "error" ? "error" : undefined}>{historyStatus}</span> : null}
               {links.length > 0 ? (
                 <>
                   <div className="history-export-controls">
@@ -741,17 +928,47 @@ export default function Home() {
                   <button
                     className="secondary-button"
                     type="button"
-                    onClick={() => {
-                      setLinks([]);
-                      setHistorySearch("");
-                      setHistoryPage(1);
-                    }}
+                    disabled={isCloudBusy || isMutating}
+                    onClick={clearLocalHistory}
                   >
-                    清空
+                    清空本地列表
                   </button>
                 </>
               ) : null}
             </div>
+          </div>
+
+          <div className="cloud-sync-panel">
+            <div className="cloud-sync-heading">
+              <strong>GitHub 私有仓库同步</strong>
+              {cloudConfigured !== null ? (
+                <span className={cloudConfigured ? "cloud-state configured" : "cloud-state"}>
+                  {cloudConfigured ? "已连接" : "待配置"}
+                </span>
+              ) : null}
+            </div>
+            <p>请在 v.bornforthis.cn 和 v.other.us.brclio.com 分别点击一次同步，把两个域名的浏览器缓存合并到同一个私有仓库。同步保留本地缓存和原订阅地址。</p>
+            <div className="cloud-sync-actions">
+              <button
+                className="primary-button"
+                type="button"
+                disabled={!historyCacheLoaded || isCloudBusy || isMutating || links.length === 0}
+                onClick={syncLocalSubscriptions}
+              >
+                {cloudAction === "sync" ? "正在同步..." : "同步本机缓存到 GitHub"}
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={!historyCacheLoaded || isCloudBusy || isMutating}
+                onClick={readCloudSubscriptions}
+              >
+                {cloudAction === "list" ? "正在读取..." : "读取 GitHub 数据"}
+              </button>
+            </div>
+            {cloudStatus ? <p className={`message ${cloudStatusKind}`} role="status">{cloudStatus}</p> : null}
+            {historyCacheWarning ? <p className="message error" role="alert">{historyCacheWarning}</p> : null}
+            {historyStatus ? <p className={`message ${historyStatusKind}`} role="status">{historyStatus}</p> : null}
           </div>
 
           {showHistoryControls ? (
@@ -773,7 +990,7 @@ export default function Home() {
           {links.length === 0 ? (
             <div className="empty-state">
               <strong>还没有链接</strong>
-              <span>生成或延长后会显示在这里。</span>
+              <span>生成新链接，或点击「读取 GitHub 数据」。</span>
             </div>
           ) : filteredLinks.length === 0 ? (
             <div className="empty-state">
@@ -782,7 +999,7 @@ export default function Home() {
             </div>
           ) : (
             <>
-              <div className="link-table" role="table" aria-label="最近生成的链接">
+              <div className="link-table" role="table" aria-label="订阅列表">
                 <div className="link-table-head" role="row">
                   <span>备注</span>
                   <span>过期时间</span>
@@ -814,9 +1031,17 @@ export default function Home() {
                           复制
                         </button>
                         <button
+                          className="secondary-button compact"
+                          type="button"
+                          disabled={Boolean(link.invalidatedAt) || isCloudBusy || isMutating}
+                          onClick={() => useGeneratedLinkForExtend(link)}
+                        >
+                          续期
+                        </button>
+                        <button
                           className="secondary-button compact danger-button"
                           type="button"
-                          disabled={Boolean(link.invalidatedAt) || invalidatingToken === link.token}
+                          disabled={Boolean(link.invalidatedAt) || isCloudBusy || isMutating}
                           onClick={() => invalidateGeneratedLink(link)}
                         >
                           {link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}
@@ -1211,7 +1436,7 @@ function getLinkStatusMessage(data: LinkStatusResponse): string {
   }
 
   if (status === "expired") {
-    return `链接已过期 ${formatDuration(Math.abs(data.expiresInSeconds || 0))}，可延长后生成替代链接`;
+    return `链接已过期 ${formatDuration(Math.abs(data.expiresInSeconds || 0))}，可延长有效期`;
   }
 
   return `链接有效，剩余 ${formatDuration(data.expiresInSeconds || 0)}`;
@@ -1309,7 +1534,8 @@ function toHistoryExportRecord(link: GeneratedLink): HistoryExportRecord {
     invalidatedAt: link.invalidatedAt,
     previousExpiresAt: link.previousExpiresAt,
     wasExpired: link.wasExpired,
-    source: link.source
+    source: link.source,
+    urls: link.urls
   };
 }
 
@@ -1324,7 +1550,8 @@ function createHistoryCsv(records: HistoryExportRecord[]): string {
     "invalidatedAt",
     "previousExpiresAt",
     "wasExpired",
-    "source"
+    "source",
+    "urls"
   ];
   const rows = records.map((record) =>
     [
@@ -1337,7 +1564,8 @@ function createHistoryCsv(records: HistoryExportRecord[]): string {
       record.invalidatedAt,
       record.previousExpiresAt,
       record.wasExpired,
-      record.source
+      record.source,
+      record.urls?.join("\n")
     ]
       .map(escapeCsvValue)
       .join(",")
@@ -1369,7 +1597,8 @@ function createHistoryText(records: HistoryExportRecord[], exportedAt: Date): st
       `失效时间：${record.invalidatedAt ?? ""}`,
       `原过期时间：${record.previousExpiresAt ?? ""}`,
       `延长前是否过期：${record.wasExpired === undefined ? "" : record.wasExpired ? "是" : "否"}`,
-      `来源：${record.source ?? ""}`
+      `来源：${record.source ?? ""}`,
+      `其它原始地址：${record.urls?.filter((url) => url !== record.url).join(" / ") ?? ""}`
     ].join("\r\n")
   );
 
@@ -1396,10 +1625,11 @@ function toGeneratedLink(
     expiresAt: data.expiresAt as string,
     expiresInSeconds: data.expiresInSeconds as number,
     label: options.label || undefined,
-    createdAt: new Date().toISOString(),
+    createdAt: data.createdAt || new Date().toISOString(),
     previousExpiresAt: data.previousExpiresAt,
     wasExpired: data.wasExpired,
-    source: options.source
+    source: options.source,
+    urls: data.urls
   };
 }
 
@@ -1423,7 +1653,8 @@ function isGeneratedLink(value: unknown): value is GeneratedLink {
     (link.invalidatedAt === undefined || typeof link.invalidatedAt === "string") &&
     (link.previousExpiresAt === undefined || typeof link.previousExpiresAt === "string") &&
     (link.wasExpired === undefined || typeof link.wasExpired === "boolean") &&
-    (link.source === undefined || link.source === "created" || link.source === "extended")
+    (link.source === undefined || link.source === "created" || link.source === "extended") &&
+    (link.urls === undefined || (Array.isArray(link.urls) && link.urls.every((url) => typeof url === "string" && url.length > 0)))
   );
 }
 
@@ -1438,9 +1669,11 @@ function mergeGeneratedLinks(current: GeneratedLink[], incoming: GeneratedLink[]
       continue;
     }
 
-    if (!existing.invalidatedAt && link.invalidatedAt) {
-      linksByToken.set(link.token, { ...existing, invalidatedAt: link.invalidatedAt });
-    }
+    linksByToken.set(link.token, {
+      ...existing,
+      invalidatedAt: existing.invalidatedAt || link.invalidatedAt,
+      urls: getOriginalUrls(existing, link)
+    });
   }
 
   const merged = Array.from(linksByToken.values()).sort((left, right) => {
@@ -1449,6 +1682,55 @@ function mergeGeneratedLinks(current: GeneratedLink[], incoming: GeneratedLink[]
   });
 
   return areGeneratedLinkListsEqual(merged, current) ? current : merged;
+}
+
+function mergeCloudGeneratedLinks(current: GeneratedLink[], incoming: GeneratedLink[]): GeneratedLink[] {
+  const currentByToken = new Map(current.map((link) => [link.token, link]));
+  const incomingByToken = new Map(incoming.map((link) => [link.token, link]));
+  const merged = current.map((local) => {
+    const cloud = incomingByToken.get(local.token);
+
+    if (!cloud) {
+      return local;
+    }
+
+    return {
+      ...cloud,
+      url: local.url,
+      urls: getOriginalUrls(local, cloud),
+      invalidatedAt: cloud.invalidatedAt || local.invalidatedAt
+    };
+  });
+
+  for (const cloud of incoming) {
+    if (!currentByToken.has(cloud.token)) {
+      merged.push(cloud);
+    }
+  }
+
+  const result = mergeGeneratedLinks([], merged);
+  return areGeneratedLinkListsEqual(result, current) ? current : result;
+}
+
+function getOriginalUrls(...links: GeneratedLink[]): string[] {
+  return Array.from(new Set(links.flatMap((link) => [link.url, ...(link.urls || [])])));
+}
+
+function getCloudLinks(data: SubscriptionsResponse): GeneratedLink[] {
+  if (!Array.isArray(data.links) || !data.links.every(isGeneratedLink)) {
+    throw new Error("GitHub 返回的订阅数据格式不完整");
+  }
+
+  return data.links;
+}
+
+function formatSyncRejections(rejected: { index: number; error: string }[]): string {
+  if (rejected.length === 0) {
+    return "";
+  }
+
+  const details = rejected.slice(0, 5).map((item) => `第 ${item.index + 1} 条：${item.error}`).join("；");
+  return `${details}${rejected.length > 5 ? "；其余拒绝记录仍保留在本机" : ""}。`;
 }
 
 function areGeneratedLinkListsEqual(left: GeneratedLink[], right: GeneratedLink[]): boolean {
@@ -1467,7 +1749,8 @@ function areGeneratedLinkListsEqual(left: GeneratedLink[], right: GeneratedLink[
         link.invalidatedAt === other.invalidatedAt &&
         link.previousExpiresAt === other.previousExpiresAt &&
         link.wasExpired === other.wasExpired &&
-        link.source === other.source
+        link.source === other.source &&
+        JSON.stringify(link.urls || []) === JSON.stringify(other.urls || [])
       );
     })
   );
