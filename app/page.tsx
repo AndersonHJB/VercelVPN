@@ -1,6 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AutomaticSyncHttpError,
+  AutomaticSyncState,
+  createAutomaticSubscriptionSync
+} from "../lib/automatic-subscription-sync";
 
 type GeneratedLink = {
   url: string;
@@ -33,9 +38,6 @@ type LinkResponse = {
 type SubscriptionsResponse = {
   configured: boolean;
   links?: GeneratedLink[];
-  imported?: number;
-  existing?: number;
-  rejected?: { index: number; error: string }[];
   error?: string;
 };
 
@@ -87,7 +89,6 @@ type HistoryExportRecord = {
 const storageKey = "yaml-link-history";
 const passwordStorageKey = "yaml-link-admin-password";
 const historyPageSize = 20;
-const syncBatchSize = 200;
 
 export default function Home() {
   const [workMode, setWorkMode] = useState<WorkMode>("create");
@@ -133,12 +134,21 @@ export default function Home() {
   const [isInvalidating, setIsInvalidating] = useState(false);
   const [invalidatingToken, setInvalidatingToken] = useState("");
   const [cloudConfigured, setCloudConfigured] = useState<boolean | null>(null);
-  const [cloudAction, setCloudAction] = useState<"list" | "sync" | null>(null);
-  const [cloudStatus, setCloudStatus] = useState("");
-  const [cloudStatusKind, setCloudStatusKind] = useState<MessageKind>("success");
+  const [cloudSyncState, setCloudSyncState] = useState<AutomaticSyncState>({ phase: "idle", lastSyncedAt: null });
+  const syncController = useRef<ReturnType<typeof createAutomaticSubscriptionSync<SubscriptionsResponse>> | null>(null);
+  const passwordValue = useRef("");
   const extensionAttempt = useRef<{ fingerprint: string; operationId: string } | null>(null);
-  const isCloudBusy = cloudAction !== null;
   const isMutating = isSubmitting || isExtending || isInvalidating || Boolean(invalidatingToken);
+
+  function updateAdminPassword(value: string) {
+    if (passwordValue.current !== value) {
+      passwordValue.current = value;
+      setCloudConfigured(null);
+      syncController.current?.setPassword(value);
+    }
+
+    setPassword(value);
+  }
 
   useEffect(() => {
     try {
@@ -200,7 +210,7 @@ export default function Home() {
           return;
         }
 
-        setLinks((current) => mergeCloudGeneratedLinks(current, parsed));
+        setLinks((current) => mergeGeneratedLinks(current, parsed));
       } catch {
         setHistoryCacheWritable(false);
         setHistoryCacheWarning("其它标签页的历史缓存读取异常，原始缓存已保留，本次暂停自动写入。");
@@ -220,7 +230,7 @@ export default function Home() {
       const savedPassword = window.localStorage.getItem(passwordStorageKey);
 
       if (savedPassword) {
-        setPassword(savedPassword);
+        updateAdminPassword(savedPassword);
         setRememberPassword(true);
       }
     } catch {
@@ -249,6 +259,53 @@ export default function Home() {
     }
   }, [password, passwordCacheLoaded, rememberPassword]);
 
+  useEffect(() => {
+    if (!historyCacheLoaded || !passwordCacheLoaded) return;
+
+    const controller = createAutomaticSubscriptionSync<SubscriptionsResponse>({
+      load: async (adminPassword, signal) => {
+        const response = await fetch("/api/subscriptions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password: adminPassword, action: "list" }),
+          signal,
+          cache: "no-store"
+        });
+        const data = (await response.json()) as SubscriptionsResponse;
+
+        if (!response.ok) {
+          throw new AutomaticSyncHttpError(response.status, data.error || "读取 GitHub 数据失败");
+        }
+
+        if (typeof data.configured !== "boolean") {
+          throw new Error("GitHub 返回的订阅数据格式不完整");
+        }
+
+        if (data.configured) getCloudLinks(data);
+        return data;
+      },
+      onData: (data) => {
+        setCloudConfigured(data.configured);
+        if (data.configured) setLinks((current) => mergeCloudGeneratedLinks(current, getCloudLinks(data)));
+      },
+      onState: setCloudSyncState,
+      isVisible: () => document.visibilityState !== "hidden"
+    });
+    syncController.current = controller;
+    controller.setPassword(passwordValue.current);
+    const refreshOnFocus = () => controller.refresh();
+    const refreshOnVisibility = () => controller.visibilityChanged();
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnVisibility);
+
+    return () => {
+      controller.stop();
+      if (syncController.current === controller) syncController.current = null;
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnVisibility);
+    };
+  }, [historyCacheLoaded, passwordCacheLoaded]);
+
   const ttlMinutes = useDurationMinutes(durationValue, durationUnit);
   const extendTtlMinutes = useDurationMinutes(extendDurationValue, extendDurationUnit);
   const filteredLinks = useMemo(() => {
@@ -275,129 +332,28 @@ export default function Home() {
     setHistoryPage((current) => Math.min(current, historyPageCount));
   }, [historyPageCount]);
 
-  async function readCloudSubscriptions() {
-    setCloudStatus("");
-    setCloudStatusKind("success");
-
-    if (!password) {
-      setCloudStatusKind("error");
-      setCloudStatus("请先在左侧填写管理员密码，再读取 GitHub 数据。");
-      return;
-    }
-
-    setCloudAction("list");
-
-    try {
-      const data = await postJson<SubscriptionsResponse>(
-        "/api/subscriptions",
-        { password, action: "list" },
-        "读取 GitHub 数据失败"
-      );
-      setCloudConfigured(data.configured);
-
-      if (!data.configured) {
-        setCloudStatusKind("error");
-        setCloudStatus("服务端尚未配置 GitHub 私有仓库存储，本机缓存已保留。");
-        return;
-      }
-
-      const cloudLinks = getCloudLinks(data);
-      setLinks((current) => mergeCloudGeneratedLinks(current, cloudLinks));
-      setQueryResult(null);
-      setQueryStatus("");
-      setCloudStatus(`已读取 GitHub 的 ${cloudLinks.length} 条订阅，本机独有的缓存和原链接均已保留。`);
-    } catch (caught) {
-      setCloudStatusKind("error");
-      setCloudStatus(`${caught instanceof Error ? caught.message : "读取 GitHub 数据失败"}。本机缓存已保留，请重试。`);
-    } finally {
-      setCloudAction(null);
-    }
-  }
-
-  async function syncLocalSubscriptions() {
-    setCloudStatus("");
-    setCloudStatusKind("success");
-
-    if (!password) {
-      setCloudStatusKind("error");
-      setCloudStatus("请先在左侧填写管理员密码，再同步本机缓存。");
-      return;
-    }
-
-    const localLinks = [...links];
-
-    if (localLinks.length === 0) {
-      setCloudStatus("本机没有可同步的记录，可以点击「读取 GitHub 数据」。");
-      return;
-    }
-
-    const batchCount = Math.ceil(localLinks.length / syncBatchSize);
-    let completedBatches = 0;
-    let imported = 0;
-    let existing = 0;
-    const rejected: { index: number; error: string }[] = [];
-    setCloudAction("sync");
-
-    try {
-      for (let offset = 0; offset < localLinks.length; offset += syncBatchSize) {
-        setCloudStatus(`正在同步第 ${completedBatches + 1} / ${batchCount} 批，每批最多 ${syncBatchSize} 条…`);
-        const data = await postJson<SubscriptionsResponse>(
-          "/api/subscriptions",
-          { password, action: "sync", links: localLinks.slice(offset, offset + syncBatchSize) },
-          "同步 GitHub 数据失败"
-        );
-        setCloudConfigured(data.configured);
-
-        if (!data.configured) {
-          throw new Error("服务端尚未配置 GitHub 私有仓库存储");
-        }
-
-        const cloudLinks = getCloudLinks(data);
-        imported += data.imported || 0;
-        existing += data.existing || 0;
-        rejected.push(...(data.rejected || []).map((item) => ({ ...item, index: item.index + offset })));
-        completedBatches += 1;
-        setLinks((current) => mergeCloudGeneratedLinks(current, cloudLinks));
-        setQueryResult(null);
-        setQueryStatus("");
-      }
-
-      const result = `已完成 ${completedBatches} 批：新增 ${imported} 条，已存在 ${existing} 条，拒绝 ${rejected.length} 条。`;
-      setCloudStatusKind(rejected.length > 0 ? "error" : "success");
-      setCloudStatus(`${result}${formatSyncRejections(rejected)}本机缓存和原链接均已保留；旧缓存不会覆盖云端续期或关闭状态。`);
-    } catch (caught) {
-      setCloudStatusKind("error");
-      const reason = caught instanceof Error ? caught.message : "同步 GitHub 数据失败";
-      setCloudStatus(
-        `${reason}。已确认完成 ${completedBatches} / ${batchCount} 批：新增 ${imported} 条，已存在 ${existing} 条，拒绝 ${rejected.length} 条。${formatSyncRejections(rejected)}本机缓存已保留，可再次点击同步继续。`
-      );
-    } finally {
-      setCloudAction(null);
-    }
-  }
-
   async function createLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    syncController.current?.beginMutation();
     setError("");
     setStatus("");
     setHistoryStatus("");
     setHistoryStatusKind("success");
     setIsSubmitting(true);
 
-    const payload =
-      expiryMode === "exact"
-        ? {
-            password,
-            label,
-            expiresAt: exactTime ? new Date(exactTime).toISOString() : ""
-          }
-        : {
-            password,
-            label,
-            ttlMinutes
-          };
-
     try {
+      const payload =
+        expiryMode === "exact"
+          ? {
+              password,
+              label,
+              expiresAt: exactTime ? new Date(exactTime).toISOString() : ""
+            }
+          : {
+              password,
+              label,
+              ttlMinutes
+            };
       const data = await postLink("/api/links", payload, "生成链接失败");
       const nextLink = toGeneratedLink(data, {
         label: label.trim() || data.label,
@@ -412,6 +368,7 @@ export default function Home() {
       setError(caught instanceof Error ? caught.message : "生成链接失败");
     } finally {
       setIsSubmitting(false);
+      syncController.current?.endMutation();
     }
   }
 
@@ -445,6 +402,7 @@ export default function Home() {
 
   async function extendExistingLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    syncController.current?.beginMutation();
     setExtendError("");
     setExtendStatus("");
     setHistoryStatus("");
@@ -499,11 +457,13 @@ export default function Home() {
       setExtendError(caught instanceof Error ? caught.message : "延长链接失败");
     } finally {
       setIsExtending(false);
+      syncController.current?.endMutation();
     }
   }
 
   async function invalidateExistingLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    syncController.current?.beginMutation();
     setInvalidateError("");
     setInvalidateStatus("");
     setHistoryStatus("");
@@ -526,10 +486,12 @@ export default function Home() {
       setInvalidateError(caught instanceof Error ? caught.message : "失效链接失败");
     } finally {
       setIsInvalidating(false);
+      syncController.current?.endMutation();
     }
   }
 
   async function invalidateGeneratedLink(link: GeneratedLink) {
+    syncController.current?.beginMutation();
     setHistoryStatus("");
     setHistoryStatusKind("success");
     setInvalidatingToken(link.token);
@@ -552,6 +514,7 @@ export default function Home() {
       setHistoryStatus(caught instanceof Error ? caught.message : "失效链接失败");
     } finally {
       setInvalidatingToken("");
+      syncController.current?.endMutation();
     }
   }
 
@@ -634,10 +597,11 @@ export default function Home() {
   }
 
   function forgetSavedPassword() {
+    setRememberPassword(false);
+    updateAdminPassword("");
+
     try {
       window.localStorage.removeItem(passwordStorageKey);
-      setRememberPassword(false);
-      setPassword("");
       setHistoryStatusKind("success");
       setHistoryStatus("已清除当前浏览器缓存的管理员密码");
     } catch {
@@ -663,7 +627,7 @@ export default function Home() {
       setHistorySearch("");
       setHistoryPage(1);
       setHistoryStatusKind("success");
-      setHistoryStatus("本地列表已清空，GitHub 数据保留，可再次读取");
+      setHistoryStatus("本地缓存已清理，GitHub 订阅会在自动同步后恢复显示");
     } catch {
       setHistoryStatusKind("error");
       setHistoryStatus("清空本地列表失败，原缓存已保留");
@@ -741,7 +705,7 @@ export default function Home() {
               <div className="field-grid">
                 <PasswordField
                   value={password}
-                  onChange={setPassword}
+                  onChange={updateAdminPassword}
                   rememberPassword={rememberPassword}
                   onRememberChange={setRememberPassword}
                   onForget={forgetSavedPassword}
@@ -767,7 +731,7 @@ export default function Home() {
                 durationLabel="有效期"
               />
 
-              <button className="primary-button" type="submit" disabled={isSubmitting || isCloudBusy}>
+              <button className="primary-button" type="submit" disabled={isSubmitting}>
                 {isSubmitting ? "生成中..." : "生成链接"}
               </button>
 
@@ -783,7 +747,7 @@ export default function Home() {
 
               <PasswordField
                 value={password}
-                onChange={setPassword}
+                onChange={updateAdminPassword}
                 rememberPassword={rememberPassword}
                 onRememberChange={setRememberPassword}
                 onForget={forgetSavedPassword}
@@ -797,7 +761,7 @@ export default function Home() {
                 required
               />
 
-              <button className="primary-button" type="submit" disabled={isQuerying || isCloudBusy}>
+              <button className="primary-button" type="submit" disabled={isQuerying}>
                 {isQuerying ? "查询中..." : "查询有效期"}
               </button>
 
@@ -822,7 +786,7 @@ export default function Home() {
               <div className="field-grid">
                 <PasswordField
                   value={password}
-                  onChange={setPassword}
+                  onChange={updateAdminPassword}
                   rememberPassword={rememberPassword}
                   onRememberChange={setRememberPassword}
                   onForget={forgetSavedPassword}
@@ -856,7 +820,7 @@ export default function Home() {
                 durationLabel="增加时长"
               />
 
-              <button className="primary-button" type="submit" disabled={isExtending || isCloudBusy}>
+              <button className="primary-button" type="submit" disabled={isExtending}>
                 {isExtending ? "延长中..." : "延长链接有效期"}
               </button>
 
@@ -872,7 +836,7 @@ export default function Home() {
 
               <PasswordField
                 value={password}
-                onChange={setPassword}
+                onChange={updateAdminPassword}
                 rememberPassword={rememberPassword}
                 onRememberChange={setRememberPassword}
                 onForget={forgetSavedPassword}
@@ -886,7 +850,7 @@ export default function Home() {
                 required
               />
 
-              <button className="primary-button danger-primary" type="submit" disabled={isInvalidating || isCloudBusy}>
+              <button className="primary-button danger-primary" type="submit" disabled={isInvalidating}>
                 {isInvalidating ? "失效中..." : "确认失效"}
               </button>
 
@@ -900,7 +864,7 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <h2 id="history-title">订阅列表</h2>
-              <p>本机可见 {links.length} 条，浏览器缓存与 GitHub 数据可手动合并。</p>
+              <p>共 {links.length} 条，自动同步 GitHub 数据并保留浏览器缓存。</p>
             </div>
             <div className="history-actions">
               {links.length > 0 ? (
@@ -928,7 +892,7 @@ export default function Home() {
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={isCloudBusy || isMutating}
+                    disabled={isMutating}
                     onClick={clearLocalHistory}
                   >
                     清空本地列表
@@ -940,33 +904,20 @@ export default function Home() {
 
           <div className="cloud-sync-panel">
             <div className="cloud-sync-heading">
-              <strong>GitHub 私有仓库同步</strong>
-              {cloudConfigured !== null ? (
-                <span className={cloudConfigured ? "cloud-state configured" : "cloud-state"}>
-                  {cloudConfigured ? "已连接" : "待配置"}
-                </span>
-              ) : null}
-            </div>
-            <p>请在 v.bornforthis.cn 和 v.other.us.brclio.com 分别点击一次同步，把两个域名的浏览器缓存合并到同一个私有仓库。同步保留本地缓存和原订阅地址。</p>
-            <div className="cloud-sync-actions">
-              <button
-                className="primary-button"
-                type="button"
-                disabled={!historyCacheLoaded || isCloudBusy || isMutating || links.length === 0}
-                onClick={syncLocalSubscriptions}
+              <strong>GitHub 自动同步</strong>
+              <span
+                className={`cloud-state${cloudSyncState.phase === "connected" && cloudConfigured ? " configured" : cloudSyncState.phase === "error" || cloudSyncState.phase === "auth-error" ? " error" : ""}`}
+                role="status"
               >
-                {cloudAction === "sync" ? "正在同步..." : "同步本机缓存到 GitHub"}
-              </button>
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={!historyCacheLoaded || isCloudBusy || isMutating}
-                onClick={readCloudSubscriptions}
-              >
-                {cloudAction === "list" ? "正在读取..." : "读取 GitHub 数据"}
-              </button>
+                {getAutomaticSyncLabel(cloudSyncState, cloudConfigured)}
+              </span>
             </div>
-            {cloudStatus ? <p className={`message ${cloudStatusKind}`} role="status">{cloudStatus}</p> : null}
+            <p>输入管理员密码后自动同步，创建、续期和关闭会立即保存。页面每 30 秒更新，切回页面时立即刷新。</p>
+            <p className="cloud-last-synced">
+              最近同步：{cloudConfigured && cloudSyncState.lastSyncedAt !== null ? new Date(cloudSyncState.lastSyncedAt).toLocaleTimeString() : "尚未同步"}
+            </p>
+            {cloudSyncState.error ? <p className="message error" role="status">{cloudSyncState.error}。{cloudSyncState.phase === "auth-error" ? "请修改管理员密码后重试。" : "缓存已保留，将自动重试。"}</p> : null}
+            {cloudConfigured === false ? <p className="message error" role="status">服务端尚未配置 GitHub 私有仓库存储，浏览器缓存已保留。</p> : null}
             {historyCacheWarning ? <p className="message error" role="alert">{historyCacheWarning}</p> : null}
             {historyStatus ? <p className={`message ${historyStatusKind}`} role="status">{historyStatus}</p> : null}
           </div>
@@ -990,7 +941,7 @@ export default function Home() {
           {links.length === 0 ? (
             <div className="empty-state">
               <strong>还没有链接</strong>
-              <span>生成新链接，或点击「读取 GitHub 数据」。</span>
+              <span>生成新链接，或输入管理员密码自动读取已有订阅。</span>
             </div>
           ) : filteredLinks.length === 0 ? (
             <div className="empty-state">
@@ -1033,7 +984,7 @@ export default function Home() {
                         <button
                           className="secondary-button compact"
                           type="button"
-                          disabled={Boolean(link.invalidatedAt) || isCloudBusy || isMutating}
+                          disabled={Boolean(link.invalidatedAt) || isMutating}
                           onClick={() => useGeneratedLinkForExtend(link)}
                         >
                           续期
@@ -1041,7 +992,7 @@ export default function Home() {
                         <button
                           className="secondary-button compact danger-button"
                           type="button"
-                          disabled={Boolean(link.invalidatedAt) || isCloudBusy || isMutating}
+                          disabled={Boolean(link.invalidatedAt) || isMutating}
                           onClick={() => invalidateGeneratedLink(link)}
                         >
                           {link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}
@@ -1724,13 +1675,23 @@ function getCloudLinks(data: SubscriptionsResponse): GeneratedLink[] {
   return data.links;
 }
 
-function formatSyncRejections(rejected: { index: number; error: string }[]): string {
-  if (rejected.length === 0) {
-    return "";
+function getAutomaticSyncLabel(state: AutomaticSyncState, configured: boolean | null): string {
+  switch (state.phase) {
+    case "idle":
+      return "等待管理员密码";
+    case "waiting":
+      return "等待连接";
+    case "refreshing":
+      return state.lastSyncedAt === null ? "正在连接" : "正在同步";
+    case "connected":
+      return configured ? "已连接" : "存储待配置";
+    case "paused":
+      return "页面隐藏，已暂停";
+    case "auth-error":
+      return "认证失败，已暂停";
+    case "error":
+      return "同步失败，将重试";
   }
-
-  const details = rejected.slice(0, 5).map((item) => `第 ${item.index + 1} 条：${item.error}`).join("；");
-  return `${details}${rejected.length > 5 ? "；其余拒绝记录仍保留在本机" : ""}。`;
 }
 
 function areGeneratedLinkListsEqual(left: GeneratedLink[], right: GeneratedLink[]): boolean {

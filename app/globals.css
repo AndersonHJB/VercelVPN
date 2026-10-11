@@ -515,6 +515,7 @@ h2 {
 .cloud-sync-heading {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   color: var(--accent-strong);
   font-size: 0.9rem;
@@ -534,6 +535,11 @@ h2 {
   color: var(--success);
 }
 
+.cloud-state.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .cloud-sync-panel > p {
   overflow-wrap: anywhere;
   color: var(--muted-strong);
@@ -549,16 +555,9 @@ h2 {
   color: var(--success);
 }
 
-.cloud-sync-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.cloud-sync-actions .primary-button {
-  width: auto;
-  flex: 1 1 220px;
-  padding: 0 14px;
+.cloud-sync-panel > .cloud-last-synced {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-heading {
