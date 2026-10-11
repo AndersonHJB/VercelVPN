@@ -4,7 +4,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "YAML Link Manager",
-  description: "Generate expiring YAML access links."
+  description: "Generate expiring YAML access links.",
+  icons: { icon: "/yaml-link-logo.png" }
 };
 
 export default function RootLayout({

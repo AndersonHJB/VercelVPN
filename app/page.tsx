@@ -640,6 +640,7 @@ export default function Home() {
               <img src="/yaml-link-logo.png" alt="" width={44} height={44} />
             </span>
             <div>
+              <span className="brand-eyebrow" aria-hidden="true">Brclio / Tools</span>
               <strong>YAML Link Manager</strong>
               <span>限时 YAML 访问控制</span>
             </div>
@@ -695,6 +696,7 @@ export default function Home() {
           {workMode === "create" ? (
             <form className="tool-form" onSubmit={createLink}>
               <div className="form-title">
+                <span className="panel-eyebrow" aria-hidden="true">Create a link</span>
                 <h1 id="tool-title">生成新链接</h1>
                 <p>为当前 YAML 来源创建一个独立的限时访问地址。</p>
               </div>
@@ -738,6 +740,7 @@ export default function Home() {
           ) : workMode === "query" ? (
             <form className="tool-form" onSubmit={queryExistingLink}>
               <div className="form-title">
+                <span className="panel-eyebrow" aria-hidden="true">Check access</span>
                 <h1 id="tool-title">查询链接有效期</h1>
                 <p>校验链接签名、过期时间和手动失效状态。</p>
               </div>
@@ -776,6 +779,7 @@ export default function Home() {
           ) : workMode === "extend" ? (
             <form className="tool-form" onSubmit={extendExistingLink}>
               <div className="form-title">
+                <span className="panel-eyebrow" aria-hidden="true">Extend access</span>
                 <h1 id="tool-title">延长已有链接</h1>
                 <p>未过期链接从原过期时间继续增加；已过期链接从当前时间重新延长。启用 GitHub 存储后，原链接保持不变。</p>
               </div>
@@ -827,6 +831,7 @@ export default function Home() {
           ) : (
             <form className="tool-form" onSubmit={invalidateExistingLink}>
               <div className="form-title">
+                <span className="panel-eyebrow" aria-hidden="true">Close access</span>
                 <h1 id="tool-title">失效已有链接</h1>
                 <p>失效后，该链接再次访问会返回 410，不再暴露 YAML 内容。</p>
               </div>
@@ -860,6 +865,7 @@ export default function Home() {
         <section className="history-panel" aria-labelledby="history-title">
           <div className="panel-heading">
             <div>
+              <span className="panel-eyebrow" aria-hidden="true">Subscriptions</span>
               <h2 id="history-title">订阅列表</h2>
               <p>共 {links.length} 条，操作后更新，也可手动刷新列表。</p>
             </div>
@@ -945,6 +951,11 @@ export default function Home() {
 
           {links.length === 0 ? (
             <div className="empty-state">
+              <span className="empty-state-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="m10 14 4-4m-5-3 1-1a4.25 4.25 0 0 1 6 6l-1 1m-6-2-1 1a4.25 4.25 0 0 0 6 6l1-1" />
+                </svg>
+              </span>
               <strong>还没有链接</strong>
               <span>生成新链接，或输入管理员密码自动读取已有订阅。</span>
             </div>
@@ -1044,7 +1055,7 @@ export default function Home() {
 
       <footer className="app-footer">
         <span>请妥善保管管理员密码和 LINK_SECRET</span>
-        <span>v0.1.0</span>
+        <span className="brand-credit">Design by Brclio · v0.1.0</span>
       </footer>
     </main>
   );
