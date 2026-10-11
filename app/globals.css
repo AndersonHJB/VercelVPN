@@ -540,6 +540,10 @@ h2 {
   color: var(--danger);
 }
 
+.cloud-refresh-button {
+  margin-left: auto;
+}
+
 .cloud-sync-panel > p {
   overflow-wrap: anywhere;
   color: var(--muted-strong);

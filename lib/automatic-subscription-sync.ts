@@ -31,7 +31,6 @@ type AutomaticSyncOptions<T> = {
   cancelSchedule?: (handle: TimerHandle) => void;
   now?: () => number;
   debounceMs?: number;
-  intervalMs?: number;
 };
 
 export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions<T>) {
@@ -39,7 +38,6 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
   const cancelSchedule = options.cancelSchedule || clearTimeout;
   const now = options.now || Date.now;
   const debounceMs = options.debounceMs ?? 600;
-  const intervalMs = options.intervalMs ?? 30_000;
   let state: AutomaticSyncState = { phase: "idle", lastSyncedAt: null };
   let password = "";
   let initialized = false;
@@ -89,7 +87,7 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
 
     if (!options.isVisible()) {
       cancelRequest();
-      queued = false;
+      queued = true;
       emit({ ...state, phase: "paused" });
       return;
     }
@@ -102,12 +100,12 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
     const debounceRemaining = debounceUntil - now();
 
     if (debounceRemaining > 0) {
+      queued = true;
       scheduleRefresh(debounceRemaining);
       return;
     }
 
     if (activeRequest) {
-      queued = true;
       return;
     }
 
@@ -146,8 +144,6 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
         if (queued) {
           queued = false;
           refresh();
-        } else {
-          scheduleRefresh(intervalMs);
         }
       }
     })();
@@ -159,7 +155,7 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
     password = value;
     generation += 1;
     halted = false;
-    queued = false;
+    queued = Boolean(value);
     debounceUntil = now() + debounceMs;
     clearTimer();
     cancelRequest();
@@ -172,13 +168,20 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
     if (stopped || !password) return;
 
     if (!options.isVisible()) {
+      if (!activeRequest && timer === null && !queued) return;
       clearTimer();
       cancelRequest();
-      queued = false;
+      queued = true;
       if (!halted) emit({ ...state, phase: "paused" });
       return;
     }
 
+    if (queued) refresh();
+  }
+
+  function manualRefresh() {
+    if (stopped) return;
+    halted = false;
     refresh();
   }
 
@@ -202,14 +205,6 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
     if (pendingMutations === 0) refresh();
   }
 
-  function invalidatePendingRead() {
-    if (stopped) return;
-    revision += 1;
-    clearTimer();
-    cancelRequest();
-    refresh();
-  }
-
   function stop() {
     stopped = true;
     generation += 1;
@@ -218,5 +213,5 @@ export function createAutomaticSubscriptionSync<T>(options: AutomaticSyncOptions
     cancelRequest();
   }
 
-  return { setPassword, refresh, visibilityChanged, beginMutation, endMutation, invalidatePendingRead, stop };
+  return { setPassword, refresh, manualRefresh, visibilityChanged, beginMutation, endMutation, stop };
 }

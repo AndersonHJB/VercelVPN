@@ -140,7 +140,7 @@ test("clearing the password cancels all reads and does not apply an outstanding 
   assert.equal(sync.state.phase, "idle");
 });
 
-test("401 and 403 stop polling for the current password until it changes", async (context) => {
+test("401 and 403 require an explicit manual retry or a changed password", async (context) => {
   for (const status of [401, 403]) {
     const sync = fixture(context);
     sync.controller.setPassword("rejected-password");
@@ -159,15 +159,23 @@ test("401 and 403 stop polling for the current password until it changes", async
     sync.clock.advance(600);
     await settle();
     assert.equal(sync.requests.length, 1, `HTTP ${status} must not repeatedly send a rejected password.`);
+    sync.controller.manualRefresh();
+    await settle();
+    assert.equal(sync.requests.length, 2);
+    assert.equal(sync.requests[1].password, "rejected-password");
+    sync.requests[1].reject(Object.assign(new Error("Authentication failed again"), { status }));
+    await settle();
+    sync.clock.advance(90_000);
+    assert.equal(sync.requests.length, 2, "A failed manual retry must not start automatic retries.");
     sync.controller.setPassword("corrected-password");
     sync.clock.advance(600);
     await settle();
-    assert.equal(sync.requests.length, 2);
-    assert.equal(sync.requests[1].password, "corrected-password");
+    assert.equal(sync.requests.length, 3);
+    assert.equal(sync.requests[2].password, "corrected-password");
   }
 });
 
-test("hidden pages abort and pause reads, then refresh immediately when visible", async (context) => {
+test("hidden pages resume an interrupted read when visible without starting periodic reads", async (context) => {
   const sync = fixture(context);
   sync.controller.setPassword("admin-a");
   sync.clock.advance(600);
@@ -189,12 +197,9 @@ test("hidden pages abort and pause reads, then refresh immediately when visible"
   sync.requests[1].resolve({ version: "visible-data" });
   await settle();
   assert.deepEqual(sync.applied, ["visible-data"]);
-  sync.clock.advance(29_999);
+  sync.clock.advance(86_400_000);
   await settle();
   assert.equal(sync.requests.length, 2);
-  sync.clock.advance(1);
-  await settle();
-  assert.equal(sync.requests.length, 3, "The visible page must resume its 30 second refresh interval.");
 });
 
 test("a pending refresh cannot overwrite a renewal or revocation, and mutation completion triggers a fresh read", async (context) => {
@@ -219,7 +224,7 @@ test("a pending refresh cannot overwrite a renewal or revocation, and mutation c
   assert.equal(sync.state.phase, "connected");
 });
 
-test("multiple focus or refresh events share one in-flight read and queue only one follow-up", async (context) => {
+test("repeated refresh clicks reuse the in-flight read without an extra follow-up", async (context) => {
   const sync = fixture(context);
   sync.controller.setPassword("admin-a");
   sync.clock.advance(600);
@@ -227,18 +232,22 @@ test("multiple focus or refresh events share one in-flight read and queue only o
   sync.controller.refresh();
   sync.controller.refresh();
   sync.controller.refresh();
+  sync.controller.manualRefresh();
   await settle();
   assert.equal(sync.requests.length, 1);
   sync.requests[0].resolve({ version: "first-read" });
   await settle();
-  assert.equal(sync.requests.length, 2);
-  sync.requests[1].resolve({ version: "queued-read" });
+  assert.equal(sync.requests.length, 1);
+  sync.controller.manualRefresh();
   await settle();
-  assert.deepEqual(sync.applied, ["first-read", "queued-read"]);
+  assert.equal(sync.requests.length, 2);
+  sync.requests[1].resolve({ version: "manual-read" });
+  await settle();
+  assert.deepEqual(sync.applied, ["first-read", "manual-read"]);
   assert.equal(sync.requests.length, 2);
 });
 
-test("temporary network failures retry at the normal interval without discarding applied data", async (context) => {
+test("temporary failures preserve applied data and retry only after a manual refresh", async (context) => {
   const sync = fixture(context);
   sync.controller.setPassword("admin-a");
   sync.clock.advance(600);
@@ -247,16 +256,23 @@ test("temporary network failures retry at the normal interval without discarding
   await settle();
   sync.controller.refresh();
   await settle();
-  sync.requests[1].reject(new Error("Temporary network error"));
+  sync.requests[1].reject(Object.assign(new Error("Temporary network error"), { status: 503 }));
   await settle();
   assert.equal(sync.state.phase, "error");
   assert.deepEqual(sync.applied, ["saved-data"]);
-  sync.clock.advance(29_999);
+  sync.clock.advance(86_400_000);
+  sync.setVisible(false);
+  sync.controller.visibilityChanged();
+  sync.setVisible(true);
+  sync.controller.visibilityChanged();
   await settle();
   assert.equal(sync.requests.length, 2);
-  sync.clock.advance(1);
+  sync.controller.manualRefresh();
   await settle();
   assert.equal(sync.requests.length, 3);
+  sync.requests[2].resolve({ version: "manual-recovery" });
+  await settle();
+  assert.deepEqual(sync.applied, ["saved-data", "manual-recovery"]);
 });
 
 test("stopping automatic refresh aborts reads and prevents late data or future polling", async (context) => {
@@ -275,7 +291,7 @@ test("stopping automatic refresh aborts reads and prevents late data or future p
   assert.equal(sync.requests.length, 1);
 });
 
-test("an old password's late error cannot change a new session or reschedule its polling", async (context) => {
+test("an old password's late error cannot change a new session or restart reads", async (context) => {
   const sync = fixture(context);
   sync.controller.setPassword("admin-a");
   sync.clock.advance(600);
@@ -293,29 +309,13 @@ test("an old password's late error cannot change a new session or reschedule its
   assert.equal(sync.state.phase, "connected");
   assert.equal(sync.state.lastSyncedAt, lastSyncedAt);
   assert.deepEqual(sync.applied, ["current-session"]);
-  sync.clock.advance(14_999);
+  sync.clock.advance(86_400_000);
   await settle();
   assert.equal(sync.requests.length, 2);
-  sync.clock.advance(1);
+  sync.controller.manualRefresh();
   await settle();
-  assert.equal(sync.requests.length, 3, "The old request's finally block must not disturb the current session's timer.");
+  assert.equal(sync.requests.length, 3);
   assert.equal(sync.requests[2].password, "admin-b");
-});
-
-test("a local or cross-tab data change invalidates a pending cloud snapshot before refreshing", async (context) => {
-  const sync = fixture(context);
-  sync.controller.setPassword("admin-a");
-  sync.clock.advance(600);
-  await settle();
-  sync.controller.invalidatePendingRead();
-  assert.equal(sync.requests[0].signal.aborted, true);
-  await settle();
-  assert.equal(sync.requests.length, 2);
-  sync.requests[1].resolve({ version: "after-storage-change" });
-  await settle();
-  sync.requests[0].resolve({ version: "before-storage-change" });
-  await settle();
-  assert.deepEqual(sync.applied, ["after-storage-change"]);
 });
 
 test("overlapping mutations resume cloud reads only after both operations finish", async (context) => {
@@ -361,4 +361,46 @@ test("changing passwords during a mutation waits for completion before reading t
   await settle();
   assert.deepEqual(sync.applied, ["new-session-after-mutation"]);
   assert.equal(sync.state.phase, "connected");
+});
+
+test("a completed password load stays idle for days and visibility changes do not read again", async (context) => {
+  const sync = fixture(context);
+  sync.controller.setPassword("admin-a");
+  sync.clock.advance(600);
+  await settle();
+  sync.requests[0].resolve({ version: "initial-password-load" });
+  await settle();
+  sync.clock.advance(7 * 86_400_000);
+  await settle();
+  assert.equal(sync.requests.length, 1);
+  for (let count = 0; count < 3; count++) {
+    sync.setVisible(false);
+    sync.controller.visibilityChanged();
+    sync.setVisible(true);
+    sync.controller.visibilityChanged();
+    await settle();
+  }
+  sync.controller.setPassword("admin-a");
+  sync.clock.advance(600);
+  await settle();
+  assert.equal(sync.requests.length, 1, "Returning to a completed session must not consume another GitHub read.");
+  assert.deepEqual(sync.applied, ["initial-password-load"]);
+});
+
+test("a password entered while hidden loads once after the page becomes visible", async (context) => {
+  const sync = fixture(context);
+  sync.setVisible(false);
+  sync.controller.setPassword("admin-a");
+  sync.clock.advance(90_000);
+  await settle();
+  assert.equal(sync.requests.length, 0);
+  sync.setVisible(true);
+  sync.controller.visibilityChanged();
+  await settle();
+  assert.equal(sync.requests.length, 1);
+  assert.equal(sync.requests[0].password, "admin-a");
+  sync.requests[0].resolve({ version: "deferred-initial-load" });
+  await settle();
+  sync.clock.advance(86_400_000);
+  assert.equal(sync.requests.length, 1);
 });

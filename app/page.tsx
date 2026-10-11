@@ -293,15 +293,12 @@ export default function Home() {
     });
     syncController.current = controller;
     controller.setPassword(passwordValue.current);
-    const refreshOnFocus = () => controller.refresh();
     const refreshOnVisibility = () => controller.visibilityChanged();
-    window.addEventListener("focus", refreshOnFocus);
     document.addEventListener("visibilitychange", refreshOnVisibility);
 
     return () => {
       controller.stop();
       if (syncController.current === controller) syncController.current = null;
-      window.removeEventListener("focus", refreshOnFocus);
       document.removeEventListener("visibilitychange", refreshOnVisibility);
     };
   }, [historyCacheLoaded, passwordCacheLoaded]);
@@ -627,7 +624,7 @@ export default function Home() {
       setHistorySearch("");
       setHistoryPage(1);
       setHistoryStatusKind("success");
-      setHistoryStatus("本地缓存已清理，GitHub 订阅会在自动同步后恢复显示");
+      setHistoryStatus("本地缓存已清理，点击刷新列表可恢复 GitHub 中的订阅");
     } catch {
       setHistoryStatusKind("error");
       setHistoryStatus("清空本地列表失败，原缓存已保留");
@@ -864,7 +861,7 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <h2 id="history-title">订阅列表</h2>
-              <p>共 {links.length} 条，自动同步 GitHub 数据并保留浏览器缓存。</p>
+              <p>共 {links.length} 条，操作后更新，也可手动刷新列表。</p>
             </div>
             <div className="history-actions">
               {links.length > 0 ? (
@@ -904,19 +901,27 @@ export default function Home() {
 
           <div className="cloud-sync-panel">
             <div className="cloud-sync-heading">
-              <strong>GitHub 自动同步</strong>
+              <strong>GitHub 订阅数据</strong>
               <span
                 className={`cloud-state${cloudSyncState.phase === "connected" && cloudConfigured ? " configured" : cloudSyncState.phase === "error" || cloudSyncState.phase === "auth-error" ? " error" : ""}`}
                 role="status"
               >
                 {getAutomaticSyncLabel(cloudSyncState, cloudConfigured)}
               </span>
+              <button
+                className="secondary-button compact cloud-refresh-button"
+                type="button"
+                disabled={!historyCacheLoaded || !passwordCacheLoaded || !password || isMutating || cloudSyncState.phase === "refreshing" || cloudSyncState.phase === "waiting"}
+                onClick={() => syncController.current?.manualRefresh()}
+              >
+                {cloudSyncState.phase === "refreshing" ? "读取中…" : "刷新列表"}
+              </button>
             </div>
-            <p>输入管理员密码后自动同步，创建、续期和关闭会立即保存。页面每 30 秒更新，切回页面时立即刷新。</p>
+            <p>输入管理员密码后读取一次。创建、续期和关闭会立即保存并更新列表；需要查看其他设备的修改时，点击刷新列表。</p>
             <p className="cloud-last-synced">
               最近同步：{cloudConfigured && cloudSyncState.lastSyncedAt !== null ? new Date(cloudSyncState.lastSyncedAt).toLocaleTimeString() : "尚未同步"}
             </p>
-            {cloudSyncState.error ? <p className="message error" role="status">{cloudSyncState.error}。{cloudSyncState.phase === "auth-error" ? "请修改管理员密码后重试。" : "缓存已保留，将自动重试。"}</p> : null}
+            {cloudSyncState.error ? <p className="message error" role="status">{cloudSyncState.error}。{cloudSyncState.phase === "auth-error" ? "请检查管理员密码后点击刷新列表。" : "缓存已保留，请点击刷新列表重试。"}</p> : null}
             {cloudConfigured === false ? <p className="message error" role="status">服务端尚未配置 GitHub 私有仓库存储，浏览器缓存已保留。</p> : null}
             {historyCacheWarning ? <p className="message error" role="alert">{historyCacheWarning}</p> : null}
             {historyStatus ? <p className={`message ${historyStatusKind}`} role="status">{historyStatus}</p> : null}
@@ -1690,7 +1695,7 @@ function getAutomaticSyncLabel(state: AutomaticSyncState, configured: boolean | 
     case "auth-error":
       return "认证失败，已暂停";
     case "error":
-      return "同步失败，将重试";
+      return "读取失败";
   }
 }
 
