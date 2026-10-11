@@ -71,6 +71,7 @@ type ExpiryMode = "duration" | "exact";
 type WorkMode = "create" | "query" | "extend" | "invalidate";
 type MessageKind = "success" | "error";
 type HistoryExportFormat = "csv" | "json" | "txt";
+type HistoryFilter = "all" | "active" | "expired" | "invalidated";
 
 type HistoryExportRecord = {
   label?: string;
@@ -92,6 +93,10 @@ const historyPageSize = 20;
 
 export default function Home() {
   const [workMode, setWorkMode] = useState<WorkMode>("create");
+  const [isToolOpen, setIsToolOpen] = useState(false);
+  const [isAdminOpen, setIsAdminOpen] = useState(true);
+  const toolDialog = useRef<HTMLDialogElement>(null);
+  const [createdLink, setCreatedLink] = useState<GeneratedLink | null>(null);
   const [password, setPassword] = useState("");
   const [rememberPassword, setRememberPassword] = useState(false);
   const [passwordCacheLoaded, setPasswordCacheLoaded] = useState(false);
@@ -116,6 +121,7 @@ export default function Home() {
   const [historyCacheWritable, setHistoryCacheWritable] = useState(false);
   const [historyCacheWarning, setHistoryCacheWarning] = useState("");
   const [historySearch, setHistorySearch] = useState("");
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
   const [historyPage, setHistoryPage] = useState(1);
   const [historyExportFormat, setHistoryExportFormat] = useState<HistoryExportFormat>("csv");
   const [error, setError] = useState("");
@@ -139,6 +145,38 @@ export default function Home() {
   const passwordValue = useRef("");
   const extensionAttempt = useRef<{ fingerprint: string; operationId: string } | null>(null);
   const isMutating = isSubmitting || isExtending || isInvalidating || Boolean(invalidatingToken);
+
+  function openTool(mode: WorkMode) {
+    if (mode === "create" && !isToolOpen) {
+      setCreatedLink(null);
+      setError("");
+      setStatus("");
+    }
+    setWorkMode(mode);
+    setIsToolOpen(true);
+  }
+
+  useEffect(() => {
+    const dialog = toolDialog.current;
+    if (!isToolOpen || !dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    return () => {
+      dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus?.isConnected && previousFocus.getClientRects().length > 0 && !previousFocus.matches(":disabled")) {
+        previousFocus.focus({ preventScroll: true });
+      } else {
+        document.querySelector<HTMLButtonElement>(".workspace-actions .primary-button")?.focus({ preventScroll: true });
+      }
+    };
+  }, [isToolOpen]);
+
+  useEffect(() => {
+    if (isToolOpen && toolDialog.current) toolDialog.current.scrollTop = 0;
+  }, [isToolOpen, workMode]);
 
   function updateAdminPassword(value: string) {
     if (passwordValue.current !== value) {
@@ -206,6 +244,7 @@ export default function Home() {
         if (parsed.length === 0) {
           setLinks([]);
           setHistorySearch("");
+          setHistoryFilter("all");
           setHistoryPage(1);
           return;
         }
@@ -232,6 +271,7 @@ export default function Home() {
       if (savedPassword) {
         updateAdminPassword(savedPassword);
         setRememberPassword(true);
+        setIsAdminOpen(false);
       }
     } catch {
       setHistoryStatusKind("error");
@@ -305,25 +345,20 @@ export default function Home() {
 
   const ttlMinutes = useDurationMinutes(durationValue, durationUnit);
   const extendTtlMinutes = useDurationMinutes(extendDurationValue, extendDurationUnit);
-  const filteredLinks = useMemo(() => {
-    const search = historySearch.trim().toLowerCase();
-
-    if (!search) {
-      return links;
-    }
-
-    return links.filter((link) =>
-      [link.label, link.url, link.token].some(
+  const viewNow = Date.now();
+  const search = historySearch.trim().toLowerCase();
+  const filteredLinks = links.filter((link) =>
+      (historyFilter === "all" || getStoredLinkStatus(link, viewNow) === historyFilter) &&
+      (!search || [link.label, link.url, link.token].some(
         (value) => typeof value === "string" && value.toLowerCase().includes(search)
-      )
-    );
-  }, [historySearch, links]);
+      ))
+  );
+  const historyCounts = { all: links.length, active: 0, expired: 0, invalidated: 0 };
+  for (const link of links) historyCounts[getStoredLinkStatus(link, viewNow)] += 1;
   const historyPageCount = Math.max(1, Math.ceil(filteredLinks.length / historyPageSize));
-  const visibleLinks = useMemo(() => {
-    const start = (historyPage - 1) * historyPageSize;
-    return filteredLinks.slice(start, start + historyPageSize);
-  }, [filteredLinks, historyPage]);
-  const showHistoryControls = links.length > historyPageSize;
+  const start = (historyPage - 1) * historyPageSize;
+  const visibleLinks = filteredLinks.slice(start, start + historyPageSize);
+  const showHistoryControls = links.length > 0;
 
   useEffect(() => {
     setHistoryPage((current) => Math.min(current, historyPageCount));
@@ -331,6 +366,7 @@ export default function Home() {
 
   async function createLink(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setCreatedLink(null);
     syncController.current?.beginMutation();
     setError("");
     setStatus("");
@@ -358,9 +394,11 @@ export default function Home() {
       });
 
       setLinks((current) => mergeCloudGeneratedLinks(current, [nextLink]));
+      setCreatedLink(nextLink);
       setHistorySearch("");
+      setHistoryFilter("all");
       setHistoryPage(1);
-      setStatus("链接已生成，已加入右侧列表");
+      setStatus("链接已生成，已加入订阅列表");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "生成链接失败");
     } finally {
@@ -442,6 +480,7 @@ export default function Home() {
       setQueryResult(null);
       setQueryStatus("");
       setHistorySearch("");
+      setHistoryFilter("all");
       setHistoryPage(1);
       setExtendStatus(
         data.unchangedUrl
@@ -569,7 +608,7 @@ export default function Home() {
     setExtendLabel(queryResult?.label || "");
     setExtendError("");
     setExtendStatus("已填入查询到的链接");
-    setWorkMode("extend");
+    openTool("extend");
   }
 
   function useGeneratedLinkForExtend(link: GeneratedLink) {
@@ -577,7 +616,7 @@ export default function Home() {
     setExtendLabel(link.label || "");
     setExtendError("");
     setExtendStatus("已填入列表中的链接，可设置增加时长或新的到期时间");
-    setWorkMode("extend");
+    openTool("extend");
   }
 
   function useQueriedLinkForInvalidate() {
@@ -590,7 +629,7 @@ export default function Home() {
     setInvalidateLinkInput(value);
     setInvalidateError("");
     setInvalidateStatus("已填入查询到的链接");
-    setWorkMode("invalidate");
+    openTool("invalidate");
   }
 
   function forgetSavedPassword() {
@@ -622,6 +661,7 @@ export default function Home() {
       setHistoryCacheWritable(true);
       setHistoryCacheWarning("");
       setHistorySearch("");
+      setHistoryFilter("all");
       setHistoryPage(1);
       setHistoryStatusKind("success");
       setHistoryStatus("本地缓存已清理，点击刷新列表可恢复 GitHub 中的订阅");
@@ -636,68 +676,170 @@ export default function Home() {
       <header className="app-header">
         <div className="app-header-inner">
           <div className="brand-lockup">
-            <span className="brand-mark" aria-hidden="true">
-              <img src="/yaml-link-logo.png" alt="" width={44} height={44} />
-            </span>
+            <span className="brand-mark" aria-hidden="true"><img src="/yaml-link-logo.png" alt="" width={44} height={44} /></span>
             <div>
               <span className="brand-eyebrow" aria-hidden="true">Brclio / Tools</span>
               <strong>YAML Link Manager</strong>
-              <span>限时 YAML 访问控制</span>
+              <span>限时订阅管理</span>
             </div>
           </div>
-          <div className="header-status" aria-label="服务状态">
-            <span aria-hidden="true" />
-            服务端校验已启用
-          </div>
+          <div className="header-status" aria-label="服务状态"><span aria-hidden="true" />服务端校验已启用</div>
         </div>
       </header>
 
       <section className="workspace" aria-label="YAML 链接工作台">
-        <section className="tool-panel" aria-labelledby="tool-title">
-          <div className="tool-tabs" role="tablist" aria-label="链接操作">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workMode === "create"}
-              className={workMode === "create" ? "active" : ""}
-              onClick={() => setWorkMode("create")}
-            >
-              生成新链接
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workMode === "query"}
-              className={workMode === "query" ? "active" : ""}
-              onClick={() => setWorkMode("query")}
-            >
-              查询有效期
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workMode === "extend"}
-              className={workMode === "extend" ? "active" : ""}
-              onClick={() => setWorkMode("extend")}
-            >
-              延长已有链接
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workMode === "invalidate"}
-              className={workMode === "invalidate" ? "active" : ""}
-              onClick={() => setWorkMode("invalidate")}
-            >
-              失效已有链接
-            </button>
+        <div className="workspace-heading">
+          <div>
+            <span className="panel-eyebrow" aria-hidden="true">Subscription workspace</span>
+            <h1>订阅工作台</h1>
+            <p>找到订阅，继续管理。续期后，原链接保持不变。</p>
+          </div>
+          <div className="workspace-actions">
+            <button className="secondary-button" type="button" onClick={() => openTool("query")}><ActionIcon kind="search" />查询链接</button>
+            <button className="primary-button" type="button" onClick={() => openTool("create")}><ActionIcon kind="plus" />新建订阅</button>
+          </div>
+        </div>
+
+        <details className="admin-panel" open={isAdminOpen} onToggle={(event) => setIsAdminOpen(event.currentTarget.open)}>
+          <summary>
+            <span className="admin-summary-title"><ActionIcon kind="lock" />管理员与存储</span>
+            <span className={`cloud-state${cloudSyncState.phase === "connected" && cloudConfigured ? " configured" : cloudSyncState.phase === "error" || cloudSyncState.phase === "auth-error" ? " error" : ""}`} role="status">{getAutomaticSyncLabel(cloudSyncState, cloudConfigured)}</span>
+            <span className="cloud-last-synced">最近同步：{cloudConfigured && cloudSyncState.lastSyncedAt !== null ? new Date(cloudSyncState.lastSyncedAt).toLocaleTimeString() : "尚未同步"}</span>
+          </summary>
+          <div className="admin-panel-content">
+            {!isToolOpen ? <PasswordField value={password} onChange={updateAdminPassword} rememberPassword={rememberPassword} onRememberChange={setRememberPassword} onForget={forgetSavedPassword} /> : <p>可在当前操作面板中修改管理员密码。</p>}
+            <div className="admin-help">
+              <strong>使用 GitHub 私有仓库存储</strong>
+              <p>输入管理员密码后读取一次。创建、续期和关闭会立即保存并更新列表；需要查看其他设备的修改时，点击刷新列表。</p>
+            </div>
+          </div>
+        </details>
+
+        <div className="feedback-region" aria-live="polite">
+          {cloudSyncState.error ? <p className="message error">{cloudSyncState.error}。{cloudSyncState.phase === "auth-error" ? "请检查管理员密码后点击刷新列表。" : "缓存已保留，请点击刷新列表重试。"}</p> : null}
+          {cloudConfigured === false ? <p className="message error">服务端尚未配置 GitHub 私有仓库存储，浏览器缓存已保留。</p> : null}
+          {historyCacheWarning ? <p className="message error" role="alert">{historyCacheWarning}</p> : null}
+          {historyStatus ? <p className={`message ${historyStatusKind}`} role="status">{historyStatus}</p> : null}
+        </div>
+
+        <section className="history-panel" aria-labelledby="history-title">
+          <div className="panel-heading">
+            <div><h2 id="history-title">订阅列表</h2><p>共 {links.length} 条订阅 · 操作后更新，按需刷新</p></div>
+            <div className="history-actions">
+              <button className="secondary-button cloud-refresh-button" type="button" disabled={!historyCacheLoaded || !passwordCacheLoaded || !password || isMutating || cloudSyncState.phase === "refreshing" || cloudSyncState.phase === "waiting"} onClick={() => syncController.current?.manualRefresh()}><ActionIcon kind="refresh" />{cloudSyncState.phase === "refreshing" ? "读取中…" : "刷新列表"}</button>
+              <details className="utilities-menu" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false; }} onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
+                <summary>更多操作<ActionIcon kind="chevron" /></summary>
+                <div className="utilities-content">
+                  <div className="utilities-heading">
+                    <strong>导出与本机缓存</strong>
+                    <button className="secondary-button compact utilities-close" type="button" onClick={(event) => {
+                      const menu = event.currentTarget.closest("details");
+                      if (menu) { menu.open = false; menu.querySelector("summary")?.focus(); }
+                    }}>收起<ActionIcon kind="close" /></button>
+                  </div>
+                  <div className="history-export-controls">
+                    <select className="history-export-select" aria-label="历史记录导出格式" value={historyExportFormat} onChange={(event) => setHistoryExportFormat(event.target.value as HistoryExportFormat)}><option value="csv">CSV</option><option value="json">JSON</option><option value="txt">TXT</option></select>
+                    <button className="secondary-button" type="button" disabled={links.length === 0} title="导出文件包含订阅链接，请妥善保管" onClick={downloadHistory}>导出全部</button>
+                  </div>
+                  <button className="secondary-button" type="button" disabled={isMutating || links.length === 0} onClick={clearLocalHistory}>清空本地列表</button>
+                  <p>仅清理当前浏览器缓存，云端订阅保留。</p>
+                  <button className="secondary-button" type="button" onClick={() => openTool("extend")}>手动输入链接续期</button>
+                  <button className="secondary-button danger-button" type="button" onClick={() => openTool("invalidate")}>手动输入链接失效</button>
+                </div>
+              </details>
+            </div>
           </div>
 
+          {showHistoryControls ? (
+            <>
+              <div className="history-toolbar">
+                <label className="search-field"><ActionIcon kind="search" /><input aria-label="搜索历史链接" type="search" value={historySearch} onChange={(event) => { setHistorySearch(event.target.value); setHistoryPage(1); }} placeholder="搜索备注、链接或 token" /></label>
+                <span>{historySearch.trim() || historyFilter !== "all" ? `找到 ${filteredLinks.length} 条` : `每页 ${historyPageSize} 条`}</span>
+              </div>
+              <div className="history-filters" role="group" aria-label="按订阅状态筛选">
+                {([ ["all", "全部"], ["active", "使用中"], ["expired", "已过期"], ["invalidated", "已失效"] ] as const).map(([value, text]) => (
+                  <button type="button" key={value} aria-pressed={historyFilter === value} onClick={() => { setHistoryFilter(value); setHistoryPage(1); }}>{text}<span>{historyCounts[value]}</span></button>
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          {links.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-state-mark" aria-hidden="true"><ActionIcon kind="link" /></span>
+              <strong>从第一条订阅开始</strong>
+              <span>输入管理员密码读取已有订阅，或新建一个限时访问链接。</span>
+              <button className="primary-button" type="button" onClick={() => openTool("create")}>新建订阅</button>
+            </div>
+          ) : filteredLinks.length === 0 ? (
+            <div className="empty-state"><strong>没有匹配的订阅</strong><span>试试其他关键词，或切换订阅状态。</span><button className="secondary-button" type="button" onClick={() => { setHistorySearch(""); setHistoryFilter("all"); setHistoryPage(1); }}>重置筛选</button></div>
+          ) : (
+            <>
+              <div className="link-table" role="table" aria-label="订阅列表">
+                <div className="link-table-head" role="row"><span role="columnheader">订阅</span><span role="columnheader">过期时间</span><span role="columnheader">订阅地址</span><span role="columnheader">操作</span></div>
+                <div className="link-table-body">
+                  {visibleLinks.map((link) => (
+                    <article className={link.invalidatedAt ? "link-row invalidated" : "link-row"} role="row" key={link.token}>
+                      <div className="link-meta" role="cell">
+                        <div className="link-title-row"><strong>{link.label || "未命名链接"}</strong><span className={`status-pill ${getStoredLinkStatus(link, viewNow)}`}>{link.invalidatedAt ? "已失效" : getStoredLinkStatus(link, viewNow) === "expired" ? "已过期" : "使用中"}</span>{link.source === "extended" ? <b>已延长</b> : null}</div>
+                        {link.previousExpiresAt ? <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small> : null}
+                        {link.invalidatedAt ? <small>失效：{new Date(link.invalidatedAt).toLocaleString()}</small> : null}
+                      </div>
+                      <time role="cell" dateTime={link.expiresAt}><small>到期时间</small><span>{new Date(link.expiresAt).toLocaleString()}</span></time>
+                      <div className="link-address" role="cell"><span className="link-domain">{getSubscriptionHost(link.url)}</span><details className="link-url-details"><summary>查看完整链接</summary><code>{link.url}</code></details></div>
+                      <div className="row-actions" role="cell">
+                        <button className="secondary-button compact" type="button" onClick={() => copyLink(link.url)}>复制</button>
+                        <button className="secondary-button compact" type="button" disabled={Boolean(link.invalidatedAt) || isMutating} onClick={() => useGeneratedLinkForExtend(link)}>续期</button>
+                        <button className="secondary-button compact danger-button" type="button" disabled={Boolean(link.invalidatedAt) || isMutating} onClick={() => invalidateGeneratedLink(link)}>{link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}</button>
+                        <a className="icon-link" href={link.url} target="_blank" rel="noreferrer" aria-label="打开链接"><ActionIcon kind="external" /></a>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+              {historyPageCount > 1 ? (
+                <nav className="history-pagination" aria-label="历史链接分页">
+                  <button className="secondary-button compact" type="button" disabled={historyPage === 1} onClick={() => setHistoryPage((current) => Math.max(1, current - 1))}>上一页</button>
+                  <span aria-live="polite">第 {historyPage} / {historyPageCount} 页</span>
+                  <button className="secondary-button compact" type="button" disabled={historyPage === historyPageCount} onClick={() => setHistoryPage((current) => Math.min(historyPageCount, current + 1))}>下一页</button>
+                </nav>
+              ) : null}
+            </>
+          )}
+        </section>
+      </section>
+
+      <nav className="mobile-nav" aria-label="工作台快捷操作">
+        <button type="button" aria-current={!isToolOpen ? "page" : undefined} onClick={() => { setIsToolOpen(false); document.getElementById("history-title")?.scrollIntoView({ block: "start" }); }}><ActionIcon kind="list" /><span>订阅</span></button>
+        <button type="button" onClick={() => openTool("create")}><ActionIcon kind="plus" /><span>新建</span></button>
+        <button type="button" onClick={() => openTool("query")}><ActionIcon kind="search" /><span>查询</span></button>
+      </nav>
+
+      <dialog className="tool-dialog" ref={toolDialog} aria-labelledby="tool-title" onCancel={(event) => { event.preventDefault(); if (!isMutating && !isQuerying) setIsToolOpen(false); }} onClick={(event) => {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const outside = event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
+        if (event.target === event.currentTarget && outside && !isMutating && !isQuerying) setIsToolOpen(false);
+      }}>
+        <div className="dialog-header"><span>链接操作</span><button className="dialog-close secondary-button" type="button" autoFocus disabled={isMutating || isQuerying} onClick={() => setIsToolOpen(false)}><ActionIcon kind="close" />返回列表</button></div>
+        <section className="tool-panel">
+          <div className="tool-tabs" role="tablist" aria-label="链接操作" onKeyDown={(event) => {
+            if (!(event.target instanceof HTMLElement) || event.target.getAttribute("role") !== "tab") return;
+            const modes: WorkMode[] = ["create", "query", "extend", "invalidate"];
+            const index = modes.indexOf(workMode);
+            const next = event.key === "ArrowRight" ? (index + 1) % 4 : event.key === "ArrowLeft" ? (index + 3) % 4 : event.key === "Home" ? 0 : event.key === "End" ? 3 : -1;
+            if (next < 0) return;
+            event.preventDefault();
+            setWorkMode(modes[next]);
+            event.currentTarget.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
+          }}>
+            {([ ["create", "生成新链接"], ["query", "查询有效期"], ["extend", "延长已有链接"], ["invalidate", "失效已有链接"] ] as const).map(([mode, text]) => <button type="button" role="tab" key={mode} aria-selected={workMode === mode} tabIndex={workMode === mode ? 0 : -1} className={workMode === mode ? "active" : ""} onClick={() => setWorkMode(mode)}>{text}</button>)}
+          </div>
+          {isToolOpen ? <>
           {workMode === "create" ? (
             <form className="tool-form" onSubmit={createLink}>
               <div className="form-title">
                 <span className="panel-eyebrow" aria-hidden="true">Create a link</span>
-                <h1 id="tool-title">生成新链接</h1>
+                <h2 id="tool-title">生成新链接</h2>
                 <p>为当前 YAML 来源创建一个独立的限时访问地址。</p>
               </div>
 
@@ -734,14 +876,24 @@ export default function Home() {
                 {isSubmitting ? "生成中..." : "生成链接"}
               </button>
 
-              {error ? <p className="message error">{error}</p> : null}
-              {status ? <p className="message success">{status}</p> : null}
+              {error ? <p className="message error" role="alert">{error}</p> : null}
+              {status ? <p className="message success" role="status">{status}</p> : null}
+              {createdLink ? (
+                <article className="status-card" aria-label="新建订阅结果">
+                  <strong>{createdLink.label || "新订阅已创建"}</strong>
+                  <code>{createdLink.url}</code>
+                  <div className="status-actions">
+                    <button className="secondary-button" type="button" onClick={async () => { await copyLink(createdLink.url); setStatus("链接已复制"); }}>复制新链接</button>
+                    <button className="secondary-button" type="button" disabled={isMutating || isQuerying} onClick={() => setIsToolOpen(false)}>返回列表</button>
+                  </div>
+                </article>
+              ) : null}
             </form>
           ) : workMode === "query" ? (
             <form className="tool-form" onSubmit={queryExistingLink}>
               <div className="form-title">
                 <span className="panel-eyebrow" aria-hidden="true">Check access</span>
-                <h1 id="tool-title">查询链接有效期</h1>
+                <h2 id="tool-title">查询链接有效期</h2>
                 <p>校验链接签名、过期时间和手动失效状态。</p>
               </div>
 
@@ -765,8 +917,8 @@ export default function Home() {
                 {isQuerying ? "查询中..." : "查询有效期"}
               </button>
 
-              {queryError ? <p className="message error">{queryError}</p> : null}
-              {queryStatus ? <p className="message success">{queryStatus}</p> : null}
+              {queryError ? <p className="message error" role="alert">{queryError}</p> : null}
+              {queryStatus ? <p className="message success" role="status">{queryStatus}</p> : null}
               {queryResult ? (
                 <LinkStatusCard
                   result={queryResult}
@@ -780,7 +932,7 @@ export default function Home() {
             <form className="tool-form" onSubmit={extendExistingLink}>
               <div className="form-title">
                 <span className="panel-eyebrow" aria-hidden="true">Extend access</span>
-                <h1 id="tool-title">延长已有链接</h1>
+                <h2 id="tool-title">延长已有链接</h2>
                 <p>未过期链接从原过期时间继续增加；已过期链接从当前时间重新延长。启用 GitHub 存储后，原链接保持不变。</p>
               </div>
 
@@ -825,14 +977,14 @@ export default function Home() {
                 {isExtending ? "延长中..." : "延长链接有效期"}
               </button>
 
-              {extendError ? <p className="message error">{extendError}</p> : null}
-              {extendStatus ? <p className="message success">{extendStatus}</p> : null}
+              {extendError ? <p className="message error" role="alert">{extendError}</p> : null}
+              {extendStatus ? <p className="message success" role="status">{extendStatus}</p> : null}
             </form>
           ) : (
             <form className="tool-form" onSubmit={invalidateExistingLink}>
               <div className="form-title">
                 <span className="panel-eyebrow" aria-hidden="true">Close access</span>
-                <h1 id="tool-title">失效已有链接</h1>
+                <h2 id="tool-title">失效已有链接</h2>
                 <p>失效后，该链接再次访问会返回 410，不再暴露 YAML 内容。</p>
               </div>
 
@@ -856,209 +1008,45 @@ export default function Home() {
                 {isInvalidating ? "失效中..." : "确认失效"}
               </button>
 
-              {invalidateError ? <p className="message error">{invalidateError}</p> : null}
-              {invalidateStatus ? <p className="message success">{invalidateStatus}</p> : null}
+              {invalidateError ? <p className="message error" role="alert">{invalidateError}</p> : null}
+              {invalidateStatus ? <p className="message success" role="status">{invalidateStatus}</p> : null}
             </form>
           )}
+          </> : null}
         </section>
+      </dialog>
 
-        <section className="history-panel" aria-labelledby="history-title">
-          <div className="panel-heading">
-            <div>
-              <span className="panel-eyebrow" aria-hidden="true">Subscriptions</span>
-              <h2 id="history-title">订阅列表</h2>
-              <p>共 {links.length} 条，操作后更新，也可手动刷新列表。</p>
-            </div>
-            <div className="history-actions">
-              {links.length > 0 ? (
-                <>
-                  <div className="history-export-controls">
-                    <select
-                      className="history-export-select"
-                      aria-label="历史记录导出格式"
-                      value={historyExportFormat}
-                      onChange={(event) => setHistoryExportFormat(event.target.value as HistoryExportFormat)}
-                    >
-                      <option value="csv">CSV</option>
-                      <option value="json">JSON</option>
-                      <option value="txt">TXT</option>
-                    </select>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      title="导出文件包含订阅链接，请妥善保管"
-                      onClick={downloadHistory}
-                    >
-                      导出全部
-                    </button>
-                  </div>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isMutating}
-                    onClick={clearLocalHistory}
-                  >
-                    清空本地列表
-                  </button>
-                </>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="cloud-sync-panel">
-            <div className="cloud-sync-heading">
-              <strong>GitHub 订阅数据</strong>
-              <span
-                className={`cloud-state${cloudSyncState.phase === "connected" && cloudConfigured ? " configured" : cloudSyncState.phase === "error" || cloudSyncState.phase === "auth-error" ? " error" : ""}`}
-                role="status"
-              >
-                {getAutomaticSyncLabel(cloudSyncState, cloudConfigured)}
-              </span>
-              <button
-                className="secondary-button compact cloud-refresh-button"
-                type="button"
-                disabled={!historyCacheLoaded || !passwordCacheLoaded || !password || isMutating || cloudSyncState.phase === "refreshing" || cloudSyncState.phase === "waiting"}
-                onClick={() => syncController.current?.manualRefresh()}
-              >
-                {cloudSyncState.phase === "refreshing" ? "读取中…" : "刷新列表"}
-              </button>
-            </div>
-            <p>输入管理员密码后读取一次。创建、续期和关闭会立即保存并更新列表；需要查看其他设备的修改时，点击刷新列表。</p>
-            <p className="cloud-last-synced">
-              最近同步：{cloudConfigured && cloudSyncState.lastSyncedAt !== null ? new Date(cloudSyncState.lastSyncedAt).toLocaleTimeString() : "尚未同步"}
-            </p>
-            {cloudSyncState.error ? <p className="message error" role="status">{cloudSyncState.error}。{cloudSyncState.phase === "auth-error" ? "请检查管理员密码后点击刷新列表。" : "缓存已保留，请点击刷新列表重试。"}</p> : null}
-            {cloudConfigured === false ? <p className="message error" role="status">服务端尚未配置 GitHub 私有仓库存储，浏览器缓存已保留。</p> : null}
-            {historyCacheWarning ? <p className="message error" role="alert">{historyCacheWarning}</p> : null}
-            {historyStatus ? <p className={`message ${historyStatusKind}`} role="status">{historyStatus}</p> : null}
-          </div>
-
-          {showHistoryControls ? (
-            <div className="history-toolbar">
-              <input
-                aria-label="搜索历史链接"
-                type="search"
-                value={historySearch}
-                onChange={(event) => {
-                  setHistorySearch(event.target.value);
-                  setHistoryPage(1);
-                }}
-                placeholder="搜索备注、链接或 token"
-              />
-              <span>{historySearch.trim() ? `找到 ${filteredLinks.length} 条` : `每页 ${historyPageSize} 条`}</span>
-            </div>
-          ) : null}
-
-          {links.length === 0 ? (
-            <div className="empty-state">
-              <span className="empty-state-mark" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none">
-                  <path d="m10 14 4-4m-5-3 1-1a4.25 4.25 0 0 1 6 6l-1 1m-6-2-1 1a4.25 4.25 0 0 0 6 6l1-1" />
-                </svg>
-              </span>
-              <strong>还没有链接</strong>
-              <span>生成新链接，或输入管理员密码自动读取已有订阅。</span>
-            </div>
-          ) : filteredLinks.length === 0 ? (
-            <div className="empty-state">
-              <strong>没有匹配的链接</strong>
-              <span>请尝试搜索其它备注、链接或 token。</span>
-            </div>
-          ) : (
-            <>
-              <div className="link-table" role="table" aria-label="订阅列表">
-                <div className="link-table-head" role="row">
-                  <span>备注</span>
-                  <span>过期时间</span>
-                  <span>链接</span>
-                  <span>操作</span>
-                </div>
-                <div className="link-table-body">
-                  {visibleLinks.map((link) => (
-                    <article className={link.invalidatedAt ? "link-row invalidated" : "link-row"} role="row" key={link.token}>
-                      <div className="link-meta" role="cell">
-                        <div className="link-title-row">
-                          <strong>{link.label || "未命名链接"}</strong>
-                          {link.source === "extended" ? <b>已延长</b> : null}
-                          {link.invalidatedAt ? <b className="danger">已失效</b> : null}
-                        </div>
-                        {link.previousExpiresAt ? (
-                          <small>原过期：{new Date(link.previousExpiresAt).toLocaleString()}</small>
-                        ) : null}
-                        {link.invalidatedAt ? (
-                          <small>失效：{new Date(link.invalidatedAt).toLocaleString()}</small>
-                        ) : null}
-                      </div>
-                      <time role="cell" dateTime={link.expiresAt}>
-                        {new Date(link.expiresAt).toLocaleString()}
-                      </time>
-                      <code role="cell">{link.url}</code>
-                      <div className="row-actions" role="cell">
-                        <button className="secondary-button compact" type="button" onClick={() => copyLink(link.url)}>
-                          复制
-                        </button>
-                        <button
-                          className="secondary-button compact"
-                          type="button"
-                          disabled={Boolean(link.invalidatedAt) || isMutating}
-                          onClick={() => useGeneratedLinkForExtend(link)}
-                        >
-                          续期
-                        </button>
-                        <button
-                          className="secondary-button compact danger-button"
-                          type="button"
-                          disabled={Boolean(link.invalidatedAt) || isMutating}
-                          onClick={() => invalidateGeneratedLink(link)}
-                        >
-                          {link.invalidatedAt ? "已失效" : invalidatingToken === link.token ? "处理中" : "失效"}
-                        </button>
-                        <a className="icon-link" href={link.url} target="_blank" rel="noreferrer" aria-label="打开链接">
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M14 5h5v5" />
-                            <path d="m10 14 9-9" />
-                            <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
-                          </svg>
-                        </a>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </div>
-              {historyPageCount > 1 ? (
-                <nav className="history-pagination" aria-label="历史链接分页">
-                  <button
-                    className="secondary-button compact"
-                    type="button"
-                    disabled={historyPage === 1}
-                    onClick={() => setHistoryPage((current) => Math.max(1, current - 1))}
-                  >
-                    上一页
-                  </button>
-                  <span aria-live="polite">
-                    第 {historyPage} / {historyPageCount} 页
-                  </span>
-                  <button
-                    className="secondary-button compact"
-                    type="button"
-                    disabled={historyPage === historyPageCount}
-                    onClick={() => setHistoryPage((current) => Math.min(historyPageCount, current + 1))}
-                  >
-                    下一页
-                  </button>
-                </nav>
-              ) : null}
-            </>
-          )}
-        </section>
-      </section>
-
-      <footer className="app-footer">
-        <span>请妥善保管管理员密码和 LINK_SECRET</span>
-        <span className="brand-credit">Design by Brclio · v0.1.0</span>
-      </footer>
+      <footer className="app-footer"><span>请妥善保管管理员密码和 LINK_SECRET</span><span className="brand-credit">Design by Brclio · v0.1.0</span></footer>
     </main>
   );
+}
+
+function getStoredLinkStatus(link: GeneratedLink, now: number): Exclude<HistoryFilter, "all"> {
+  if (link.invalidatedAt) return "invalidated";
+  return Date.parse(link.expiresAt) <= now ? "expired" : "active";
+}
+
+function getSubscriptionHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "订阅链接";
+  }
+}
+
+function ActionIcon({ kind }: { kind: "search" | "plus" | "lock" | "refresh" | "chevron" | "link" | "external" | "list" | "close" }) {
+  const paths = {
+    search: "M21 21l-5-5m2-6a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
+    plus: "M12 5v14M5 12h14",
+    lock: "M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5zM12 14v3",
+    refresh: "M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1",
+    chevron: "m7 10 5 5 5-5",
+    link: "m10 14 4-4m-5-3 1-1a4.25 4.25 0 0 1 6 6l-1 1m-6-2-1 1a4.25 4.25 0 0 0 6 6l1-1",
+    external: "M14 5h5v5m-9 4 9-9M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4",
+    list: "M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1",
+    close: "m6 6 12 12M18 6 6 18"
+  };
+  return <svg className="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[kind]} /></svg>;
 }
 
 function TextField({
